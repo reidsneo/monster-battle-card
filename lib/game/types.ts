@@ -1,12 +1,21 @@
-export const CONTENT_VERSION = 'starter-v1' as const;
+export const CONTENT_VERSION = 'journey-v2' as const;
 
 export type PlayerIndex = 0 | 1;
 export type Difficulty = 'easy' | 'normal' | 'hard';
 export type Attribute = 'ground' | 'air' | 'water';
 export type SkillType = 'POW' | 'INT' | 'SPE' | 'DGE' | 'BLK';
 export type CardOwner =
-  | 'Tiger' | 'Gali' | 'Suezo' | 'Dino' | 'Hare' | 'Mocchi'
-  | 'Golem' | 'Pixie' | 'Naga' | 'Any' | 'Breeder';
+  | 'Tiger'
+  | 'Gali'
+  | 'Suezo'
+  | 'Dino'
+  | 'Hare'
+  | 'Mocchi'
+  | 'Golem'
+  | 'Pixie'
+  | 'Naga'
+  | 'Any'
+  | 'Breeder';
 
 export type EffectDefinition =
   | { kind: 'combo'; group: 'tiger-claw'; twoDamage: 3; threeDamage: 7 }
@@ -55,7 +64,8 @@ export interface MonsterDefinition {
 }
 
 export interface DeckDefinition {
-  id: 'miracle' | 'speed' | 'powerful';
+  id: string;
+  source?: 'starter' | 'npc' | 'custom';
   name: string;
   color: string;
   description: string;
@@ -63,8 +73,15 @@ export interface DeckDefinition {
   skillIds: string[];
 }
 
-export interface CardInstance { instanceId: string; cardId: string }
-export interface StatusEffect { kind: 'jump'; appliedTurn: number; expiresTurn: number }
+export interface CardInstance {
+  instanceId: string;
+  cardId: string;
+}
+export interface StatusEffect {
+  kind: 'jump';
+  appliedTurn: number;
+  expiresTurn: number;
+}
 export interface MonsterState {
   definitionId: string;
   life: number;
@@ -75,7 +92,7 @@ export interface MonsterState {
 }
 
 export interface PlayerState {
-  deckId: DeckDefinition['id'];
+  deckId: string;
   drawPile: CardInstance[];
   hand: CardInstance[];
   guts: CardInstance[];
@@ -86,7 +103,10 @@ export interface PlayerState {
   setupGuts: number;
 }
 
-export interface TargetRef { player: PlayerIndex; monster: number }
+export interface TargetRef {
+  player: PlayerIndex;
+  monster: number;
+}
 export interface PendingAttack {
   sourcePlayer: PlayerIndex;
   attackerMonster: number | null;
@@ -110,12 +130,44 @@ export interface PendingAttack {
   lifesteal: boolean;
 }
 
-export type GamePhase = 'setup-guts' | 'attack' | 'defense' | 'guts' | 'gameover';
+export type GamePhase =
+  | 'setup-guts'
+  | 'attack'
+  | 'defense'
+  | 'guts'
+  | 'gameover';
 export interface GameEvent {
   id: number;
   turn: number;
   kind: 'system' | 'draw' | 'play' | 'damage' | 'defense' | 'guts' | 'victory';
   message: string;
+  data?: {
+    actor?: PlayerIndex;
+    cardIds?: string[];
+    sourceMonster?: number | null;
+    target?: TargetRef;
+    targets?: TargetRef[];
+    amount?: number;
+    beforeLife?: number;
+    afterLife?: number;
+    attackType?: 'POW' | 'INT';
+    role?: 'attack' | 'special' | 'defense' | 'draw' | 'guts' | 'result';
+  };
+}
+
+export interface DuelContext {
+  mode: 'quick' | 'campaign';
+  npcId?: string;
+  returnPath?: string;
+  areaId?: WorldAreaId;
+}
+
+export interface GameSetup {
+  playerDeckId: string;
+  opponentDeckId?: string;
+  difficulty: Difficulty;
+  seed?: number;
+  duelContext?: DuelContext;
 }
 
 export interface GameState {
@@ -133,6 +185,7 @@ export interface GameState {
   eventSequence: number;
   events: GameEvent[];
   selectedSetupCards: string[];
+  duelContext?: DuelContext;
 }
 
 export type GameCommand =
@@ -165,6 +218,110 @@ export interface LegalDefense {
   scoreHint: number;
 }
 
+export interface CardActionIntent {
+  sourceInstanceId: string;
+  candidateActionIds: string[];
+  chainInstanceIds: string[];
+  targets: TargetRef[];
+}
+
+export interface TargetIntent {
+  target: TargetRef;
+  actionIds: string[];
+  tone: 'attack' | 'heal' | 'defense';
+}
+
+export type PresentationPhase =
+  | 'setup'
+  | 'draw'
+  | 'attack'
+  | 'defense'
+  | 'guts'
+  | 'result';
+export interface BattlePresentationCue {
+  id: string;
+  phase: PresentationPhase;
+  owner: PlayerIndex;
+  title: string;
+  eventId?: number;
+}
+
+export type VisualEffectKind =
+  | 'slash'
+  | 'fang'
+  | 'impact'
+  | 'projectile'
+  | 'energy'
+  | 'shield'
+  | 'redirect'
+  | 'reflect'
+  | 'heal'
+  | 'status'
+  | 'guts';
+export interface VisualEffectProfile {
+  kind: VisualEffectKind;
+  color: string;
+  intensity: 1 | 2 | 3;
+  shake: 0 | 1 | 2;
+}
+
+export type OutfitPalette = 'azure' | 'vermilion' | 'moss' | 'gold';
+export type WorldAreaId = 'ranch' | 'festival';
+export interface PresentationSettings {
+  speed: 1 | 1.5 | 2;
+  reducedMotion: boolean;
+  cameraMotion: boolean;
+  particleDensity: 'low' | 'high';
+  effectsMuted: boolean;
+}
+
+export interface NpcDefinition {
+  id: string;
+  name: string;
+  title: string;
+  areaId: WorldAreaId;
+  deckId: string;
+  difficulty: Difficulty;
+  portrait: string;
+  position: [number, number, number];
+  greeting: string;
+  rematch: string;
+  lockedText?: string;
+  prerequisite?: 'festival' | 'final';
+}
+
+export interface WorldDefinition {
+  id: WorldAreaId;
+  name: string;
+  subtitle: string;
+  npcIds: string[];
+}
+
+export interface DialogueChoice {
+  id: 'duel' | 'leave';
+  label: string;
+}
+export interface DialogueGraph {
+  npcId: string;
+  line: string;
+  choices: DialogueChoice[];
+}
+
+export interface CampaignSaveV1 {
+  id: 'campaign';
+  schemaVersion: 1;
+  contentVersion: typeof CONTENT_VERSION;
+  updatedAt: string;
+  playerName: string;
+  starterDeckId: string;
+  outfit: OutfitPalette;
+  areaId: WorldAreaId;
+  position: [number, number, number];
+  yaw: number;
+  defeatedNpcIds: string[];
+  campaignComplete: boolean;
+}
+
 export interface PlayerObservation {
   perspective: PlayerIndex;
   turn: number;
@@ -189,10 +346,11 @@ export interface SavedReplay {
   id: string;
   contentVersion: typeof CONTENT_VERSION;
   createdAt: string;
-  playerDeck: DeckDefinition['id'];
-  aiDeck: DeckDefinition['id'];
+  playerDeck: string;
+  aiDeck: string;
   difficulty: Difficulty;
   winner: PlayerIndex;
   seed: number;
   events: GameEvent[];
+  duelContext?: DuelContext;
 }
