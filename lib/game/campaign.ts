@@ -140,11 +140,12 @@ export function createCampaign(
     DECK_BY_ID[starterDeckId]?.source === 'starter' ? starterDeckId : 'miracle';
   return {
     id: 'campaign',
-    schemaVersion: 1,
+    schemaVersion: 2,
     contentVersion: CONTENT_VERSION,
     updatedAt: new Date().toISOString(),
     playerName: 'Breeder',
-    starterDeckId: safeDeck,
+    initialStarterDeckId: safeDeck,
+    activeDeckId: safeDeck,
     outfit,
     areaId: 'ranch',
     position: [0, 0, 4.7],

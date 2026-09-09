@@ -118,6 +118,7 @@ function CardPlane({
   url,
   position,
   rotation = 0,
+  scale = 1,
   dim = false,
   glow = false,
   selected = false,
@@ -130,6 +131,7 @@ function CardPlane({
   url: string;
   position: Point;
   rotation?: number;
+  scale?: number;
   dim?: boolean;
   glow?: boolean;
   selected?: boolean;
@@ -195,7 +197,7 @@ function CardPlane({
   };
 
   return (
-    <group ref={group} position={position} rotation={[0, rotation, 0]}>
+    <group ref={group} position={position} rotation={[0, rotation, 0]} scale={scale}>
       <mesh castShadow receiveShadow>
         <boxGeometry args={[1.2, 0.065, 1.69]} />
         <meshStandardMaterial
@@ -668,6 +670,19 @@ function Arena({
         args={[13.6, 24, '#d4c25c', '#568b7a']}
         position={[0, -0.005, -0.25]}
       />
+      {state.environment && (
+        <CardPlane
+          url={CARD_BY_ID[state.environment.card.cardId].image.replace(
+            '/detail/',
+            '/scene/',
+          )}
+          position={[4.55, 0.04, -0.25]}
+          rotation={state.environment.owner === 0 ? -0.08 : 0.08}
+          scale={0.72}
+          onPreview={() => props.onPreview(state.environment!.card.cardId)}
+          onInspect={() => props.onInspect(state.environment!.card.cardId)}
+        />
+      )}
       {state.players[1].monsters.map((monster, index) => (
         <CardPlane
           key={`e-${index}`}

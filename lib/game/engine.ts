@@ -1,5 +1,10 @@
-import { CARD_BY_ID, MONSTER_BY_ID } from './cards';
-import { DECK_BY_ID } from './decks';
+import { CARD_BY_ID, MONSTERS, MONSTER_BY_ID } from './cards';
+import {
+  generateRandomDeck,
+  getDeckDefinition,
+  isCardCompatibleWithMonster,
+  registerDeck,
+} from './decks';
 import {
   CONTENT_VERSION,
   type CardInstance,
@@ -63,7 +68,7 @@ function makePlayer(
   player: PlayerIndex,
   seed: number,
 ): PlayerState {
-  const deck = DECK_BY_ID[deckId];
+  const deck = getDeckDefinition(deckId);
   if (!deck) throw new Error(`Unknown deck ${deckId}.`);
   const instances = deck.skillIds.map((cardId, index) => ({
     instanceId: `${player}-${cardId}-${index}`,
@@ -82,7 +87,15 @@ function makePlayer(
     discard: [],
     breederCardPlayed: false,
     dodgeLocked: false,
+    blockLocked: false,
+    skipNextTurn: false,
     setupGuts: 0,
+    gutsConvertedThisTurn: 0,
+    permissions: {
+      extraBreeders: false,
+      unlimitedAttacks: false,
+      freeSpecials: false,
+    },
     monsters: deck.monsterIds.map((definitionId): MonsterState => {
       const definition = MONSTER_BY_ID[definitionId];
       return {
@@ -120,17 +133,16 @@ export function createGame(
           duelContext: { mode: 'quick' },
         }
       : setupOrDeck;
-  const playerDeck = DECK_BY_ID[setup.playerDeckId]
+  if (setup.playerDeck) registerDeck(setup.playerDeck);
+  if (setup.opponentDeck) registerDeck(setup.opponentDeck);
+  const playerDeck = getDeckDefinition(setup.playerDeckId)
     ? setup.playerDeckId
     : 'miracle';
   const seed = (setup.seed ?? Date.now()) >>> 0;
-  const rivals = Object.keys(DECK_BY_ID).filter(
-    (id) => id !== playerDeck && DECK_BY_ID[id].source === 'starter',
-  );
   const rival =
-    setup.opponentDeckId && DECK_BY_ID[setup.opponentDeckId]
+    setup.opponentDeckId && getDeckDefinition(setup.opponentDeckId)
       ? setup.opponentDeckId
-      : rivals[seed % rivals.length];
+      : generateRandomDeck(seed ^ 0xa53c9e17).id;
   const startingPlayer = (seed & 1) as PlayerIndex;
   const state: GameState = {
     contentVersion: CONTENT_VERSION,
@@ -147,12 +159,15 @@ export function createGame(
     eventSequence: 0,
     events: [],
     selectedSetupCards: [],
+    environment: null,
+    revealedInformation: [],
+    transformationHistory: [],
     duelContext: setup.duelContext ?? { mode: 'quick' },
   };
   addEvent(
     state,
     'system',
-    `${DECK_BY_ID[playerDeck].name} faces ${DECK_BY_ID[rival].name}.`,
+    `${getDeckDefinition(playerDeck)!.name} faces ${getDeckDefinition(rival)!.name}.`,
   );
   addEvent(
     state,
@@ -180,10 +195,25 @@ export function createGame(
   return state;
 }
 
-function ownerMonster(state: GameState, player: PlayerIndex, owner: string) {
+function ownerMonster(
+  state: GameState,
+  player: PlayerIndex,
+  owner: string,
+  type: 'POW' | 'INT' | 'SPE' | 'DGE' | 'BLK' = 'POW',
+) {
   return state.players[player].monsters.findIndex(
-    (monster) =>
-      MONSTER_BY_ID[monster.definitionId].name === owner && monster.life > 0,
+    (monster) => {
+      const definition = MONSTER_BY_ID[monster.definitionId];
+      const defense = type === 'DGE' || type === 'BLK';
+      return (
+        monster.life > 0 &&
+        (definition.breedType === 'pure' || definition.subBreed === '???'
+          ? definition.mainBreed === owner
+          : defense
+            ? definition.subBreed === owner
+            : definition.mainBreed === owner)
+      );
+    },
   );
 }
 
@@ -191,12 +221,46 @@ function canPay(player: PlayerState, amount: number) {
   return player.guts.length >= amount;
 }
 
+function effectiveCost(
+  state: GameState,
+  player: PlayerIndex,
+  instances: CardInstance[],
+) {
+  const definitions = instances.map((instance) => CARD_BY_ID[instance.cardId]);
+  if (
+    (state.players[player].permissions.freeSpecials ||
+      state.environment?.card.cardId === '356') &&
+    definitions[0]?.type === 'SPE'
+  )
+    return 0;
+  if (
+    state.environment?.card.cardId === '354' &&
+    definitions[0]?.type === 'BLK'
+  )
+    return 0;
+  let cost = definitions.reduce((sum, definition) => sum + definition.guts, 0);
+  for (const definition of definitions)
+    for (const effect of definition.effects)
+      if (effect.kind === 'cost-modifier') cost += effect.amount;
+  if (state.environment) {
+    const environment = CARD_BY_ID[state.environment.card.cardId];
+    for (const effect of environment.effects)
+      if (effect.kind === 'cost-modifier') cost += effect.amount;
+  }
+  return Math.max(0, cost);
+}
+
 function compatible(cardId: string, monster: MonsterState) {
-  const owner = CARD_BY_ID[cardId].owner;
+  return isCardCompatibleWithMonster(
+    CARD_BY_ID[cardId],
+    MONSTER_BY_ID[monster.definitionId],
+  );
+}
+
+function sourceHasActed(player: PlayerState) {
   return (
-    owner === 'Any' ||
-    owner === 'Breeder' ||
-    MONSTER_BY_ID[monster.definitionId].name === owner
+    player.breederCardPlayed ||
+    player.monsters.some((monster) => monster.attacked)
   );
 }
 
@@ -209,12 +273,22 @@ function baseTargets(
 ): TargetRef[] {
   const effect = CARD_BY_ID[cardId].effects.find((item) => item.kind === 'aoe');
   if (!effect) return [target];
-  if (effect.target === 'opponents')
+  if (
+    effect.target === 'opponents' ||
+    effect.target === 'opponent-air' ||
+    effect.target === 'opponent-ground'
+  )
     return state.players[other(source)].monsters
       .map((monster, index) => ({ player: other(source), monster: index }))
-      .filter(
-        (ref) => state.players[ref.player].monsters[ref.monster].life > 0,
-      );
+      .filter((ref) => {
+        const monster = state.players[ref.player].monsters[ref.monster];
+        return (
+          monster.life > 0 &&
+          (effect.target === 'opponents' ||
+            monster.attribute ===
+              (effect.target === 'opponent-air' ? 'air' : 'ground'))
+        );
+      });
   return ([0, 1] as PlayerIndex[])
     .flatMap((player) =>
       state.players[player].monsters.map((monster, index) => ({
@@ -226,7 +300,7 @@ function baseTargets(
       const monster = state.players[ref.player].monsters[ref.monster];
       return (
         monster.life > 0 &&
-        monster.attribute === 'ground' &&
+        (effect.target === 'all-except-self' || monster.attribute === 'ground') &&
         !(ref.player === source && ref.monster === attacker)
       );
     });
@@ -243,15 +317,75 @@ function attackAction(
   const combo = definitions[0].effects.find(
     (effect) => effect.kind === 'combo',
   );
-  const damage =
+  const pairCombo = definitions[0].effects.find(
+    (effect) => effect.kind === 'pair-combo',
+  );
+  let damage =
     combo && cardInstances.length > 1
       ? cardInstances.length === 3
         ? combo.threeDamage
         : combo.twoDamage
-      : (definitions[0].damage ?? 0);
-  const cost =
-    definitions.reduce((sum, item) => sum + item.guts, 0) +
-    (modifier ? CARD_BY_ID[modifier.cardId].guts : 0);
+      : pairCombo && cardInstances.length > 1
+        ? pairCombo.damage
+        : (definitions[0].damage ?? 0);
+  if (attackerMonster !== null) {
+    const attacker = state.players[state.activePlayer].monsters[attackerMonster];
+    const attackerDefinition = MONSTER_BY_ID[attacker.definitionId];
+    for (const effect of modifier ? CARD_BY_ID[modifier.cardId].effects : []) {
+      if (effect.kind !== 'attack-modifier') continue;
+      const applies =
+        !effect.condition ||
+        effect.condition === 'always' ||
+        (effect.condition === 'low-life' && attacker.life <= 2) ||
+        (effect.condition === 'pure' && attackerDefinition.breedType === 'pure') ||
+        (effect.condition === 'deck-empty' &&
+          state.players[state.activePlayer].drawPile.length === 0);
+      if (applies)
+        damage =
+          effect.operation === 'add'
+            ? damage + effect.amount
+            : damage * effect.amount;
+    }
+    if (
+      definitions[0].type === 'POW' &&
+      attacker.statuses.some((status) => status.kind === 'jump')
+    )
+      damage *= 2;
+    if (
+      attacker.statuses.some(
+        (status) => status.kind === 'anger' && state.turn > status.appliedTurn,
+      )
+    )
+      damage *= 2;
+  }
+  const targetAttribute =
+    state.players[target.player].monsters[target.monster].attribute;
+  const attributeDamage = definitions[0].effects.find(
+    (effect) => effect.kind === 'attribute-damage',
+  );
+  if (attributeDamage?.attribute === targetAttribute)
+    damage *= attributeDamage.multiplier;
+  const environment = state.environment
+    ? CARD_BY_ID[state.environment.card.cardId]
+    : undefined;
+  for (const effect of environment?.effects ?? []) {
+    if (effect.kind === 'attack-modifier')
+      damage =
+        effect.operation === 'add'
+          ? damage + effect.amount
+          : damage * effect.amount;
+    if (
+      effect.kind === 'environment-damage' &&
+      effect.types.includes(definitions[0].type as 'POW' | 'INT')
+    )
+      damage += effect.amount;
+  }
+  damage = Math.max(0, damage);
+  const cost = effectiveCost(
+    state,
+    state.activePlayer,
+    [...cardInstances, ...(modifier ? [modifier] : [])],
+  );
   const label =
     cardInstances.length > 1
       ? `${cardInstances.map((item) => CARD_BY_ID[item.cardId].name).join(' + ')} combo`
@@ -260,12 +394,13 @@ function attackAction(
     id: `attack:${cardInstances.map((item) => item.instanceId).join(',')}:${attackerMonster ?? 'b'}:${target.player}-${target.monster}:${modifier?.instanceId ?? '-'}`,
     kind: 'attack',
     label,
-    detail: `${cost} Guts · ${damage}${modifier ? ' ×2 if wounded' : ''} damage`,
+    detail: `${cost} Guts · ${damage} damage${modifier ? ` · ${CARD_BY_ID[modifier.cardId].name}` : ''}`,
     cardInstanceIds: cardInstances.map((item) => item.instanceId),
     modifierInstanceIds: modifier ? [modifier.instanceId] : [],
     attackerMonster,
     target,
     scoreHint: damage * 3 - cost,
+    estimatedDamage: damage,
   };
 }
 
@@ -281,7 +416,11 @@ export function getLegalActions(state: GameState): LegalAction[] {
     }))
     .filter(({ monster }) => monster.life > 0);
   const actions: LegalAction[] = [];
-  const modifiers = self.hand.filter((instance) => instance.cardId === '110');
+  const modifiers = self.hand.filter((instance) =>
+    CARD_BY_ID[instance.cardId]?.effects.some(
+      (effect) => effect.kind === 'attack-modifier',
+    ),
+  );
 
   for (const instance of self.hand) {
     const card = CARD_BY_ID[instance.cardId];
@@ -289,12 +428,109 @@ export function getLegalActions(state: GameState): LegalAction[] {
       !card ||
       card.type === 'DGE' ||
       card.type === 'BLK' ||
-      card.id === '110'
+      card.effects.some((effect) => effect.kind === 'attack-modifier')
     )
       continue;
     if (card.owner === 'Breeder') {
-      if (self.breederCardPlayed) continue;
-      if (card.id === '113') {
+      if (self.breederCardPlayed && !self.permissions.extraBreeders) continue;
+      if (
+        state.environment?.card.cardId === '353' &&
+        card.type !== 'ENV'
+      )
+        continue;
+      const heal = card.effects.find((effect) => effect.kind === 'heal');
+      if (
+        card.id === '114' &&
+        (sourceHasActed(self) || self.drawPile.length < 5)
+      )
+        continue;
+      if (card.id === '127' && self.monsters.filter((monster) => monster.life > 0).length !== 1)
+        continue;
+      if (card.id === '254') {
+        self.monsters.forEach((monster, index) => {
+          if (monster.life > 0 && monster.attacked)
+            actions.push({
+              id: `special:${instance.instanceId}:ready:${index}`,
+              kind: 'special',
+              label: card.name,
+              detail: `Let ${MONSTER_BY_ID[monster.definitionId].name} attack again.`,
+              cardInstanceIds: [instance.instanceId],
+              modifierInstanceIds: [],
+              attackerMonster: null,
+              target: { player, monster: index },
+              scoreHint: 8,
+            });
+        });
+      } else if (card.id === '351') {
+        self.monsters.forEach((monster, index) => {
+          if (monster.statuses.some((status) => status.kind === 'cannot-attack'))
+            actions.push({
+              id: `special:${instance.instanceId}:cleanse:${index}`,
+              kind: 'special',
+              label: card.name,
+              detail: `Remove Cannot Attack from ${MONSTER_BY_ID[monster.definitionId].name}.`,
+              cardInstanceIds: [instance.instanceId],
+              modifierInstanceIds: [],
+              attackerMonster: null,
+              target: { player, monster: index },
+              scoreHint: 7,
+            });
+        });
+      } else if (card.handler === 'resurrection') {
+        self.monsters.forEach((monster, index) => {
+          if (
+            monster.life <= 0 &&
+            MONSTER_BY_ID[monster.definitionId].mainBreed === 'Phoenix' &&
+            canPay(self, effectiveCost(state, player, [instance]))
+          )
+            actions.push({
+              id: `special:${instance.instanceId}:resurrection:${index}`,
+              kind: 'special',
+              label: card.name,
+              detail: `Revive ${MONSTER_BY_ID[monster.definitionId].name} with 4 Life`,
+              cardInstanceIds: [instance.instanceId],
+              modifierInstanceIds: [],
+              attackerMonster: null,
+              target: { player, monster: index },
+              scoreHint: 18,
+            });
+        });
+      } else if (card.handler === 'fusion') {
+        const alive = self.monsters
+          .map((monster, index) => ({ monster, index }))
+          .filter(({ monster }) => monster.life > 0);
+        for (let left = 0; left < alive.length; left += 1)
+          for (let right = left + 1; right < alive.length; right += 1) {
+            const first = MONSTER_BY_ID[alive[left].monster.definitionId];
+            const second = MONSTER_BY_ID[alive[right].monster.definitionId];
+            const survivors = self.monsters
+              .filter((_, index) =>
+                index !== alive[left].index && index !== alive[right].index,
+              )
+              .map((monster) => MONSTER_BY_ID[monster.definitionId].logicalId);
+            const replacement = MONSTERS.find(
+              (monster) =>
+                monster.breedType === 'mixed' &&
+                monster.mainBreed === first.mainBreed &&
+                monster.subBreed === second.subBreed &&
+                !survivors.includes(monster.logicalId),
+            );
+            if (replacement && canPay(self, effectiveCost(state, player, [instance])))
+              actions.push({
+                id: `special:${instance.instanceId}:fusion:${alive[left].index}-${alive[right].index}:${replacement.logicalId}`,
+                kind: 'special',
+                label: `${card.name} → ${replacement.name}`,
+                detail: `Fuse ${first.name} and ${second.name} into ${replacement.name}`,
+                cardInstanceIds: [instance.instanceId],
+                modifierInstanceIds: [],
+                attackerMonster: null,
+                target: { player, monster: alive[left].index },
+                sacrificedMonsters: [alive[left].index, alive[right].index],
+                replacementMonsterId: replacement.defaultPrintId,
+                scoreHint: 14,
+              });
+          }
+      } else if (heal) {
         self.monsters.forEach((monster, index) => {
           if (
             monster.life > 0 &&
@@ -303,76 +539,186 @@ export function getLegalActions(state: GameState): LegalAction[] {
             actions.push({
               id: `special:${instance.instanceId}:heal:${index}`,
               kind: 'special',
-              label: 'Mango',
-              detail: `Heal ${MONSTER_BY_ID[monster.definitionId].name} by 1`,
+              label: card.name,
+              detail: `Heal ${MONSTER_BY_ID[monster.definitionId].name} by ${heal.amount}`,
               cardInstanceIds: [instance.instanceId],
               modifierInstanceIds: [],
               attackerMonster: null,
               target: { player, monster: index },
-              scoreHint: 5,
+              scoreHint: heal.amount * 3,
             });
         });
-      } else if (canPay(self, card.guts))
+      } else if (card.type === 'SPE' || card.type === 'ENV') {
+        if (canPay(self, effectiveCost(state, player, [instance])))
+          actions.push({
+            id: `special:${instance.instanceId}:${card.id}`,
+            kind: 'special',
+            label: card.name,
+            detail: card.text,
+            cardInstanceIds: [instance.instanceId],
+            modifierInstanceIds: [],
+            attackerMonster: null,
+            target: null,
+            scoreHint: card.type === 'ENV' ? 8 : 5,
+          });
+      } else if (canPay(self, effectiveCost(state, player, [instance])))
         targets.forEach(({ ref }) =>
           actions.push(attackAction(state, [instance], null, ref)),
         );
       continue;
     }
-    const attacker = ownerMonster(state, player, card.owner);
-    if (attacker < 0) continue;
-    const monster = self.monsters[attacker];
-    const repeatable = card.effects.some(
-      (effect) => effect.kind === 'repeatable',
-    );
-    if (
-      monster.attacked &&
-      !(repeatable && monster.repeatableGroup === 'pixie-spark')
-    )
-      continue;
-    if (!canPay(self, card.guts)) continue;
-    if (card.type === 'SPE') {
-      if (card.id === '058') {
-        self.monsters.forEach((ally, index) => {
-          if (
-            ally.life > 0 &&
-            ally.life < MONSTER_BY_ID[ally.definitionId].life
-          )
+    const attackers = self.monsters
+      .map((monster, index) => ({ monster, index }))
+      .filter(({ monster }) => monster.life > 0 && compatible(card.id, monster));
+    for (const { monster, index: attacker } of attackers) {
+      if (['182', '241'].includes(card.id) && monster.life > 2) continue;
+      if (card.id === '125' && self.discard.length < monster.life) continue;
+      if (
+        card.id === '250' &&
+        self.monsters.filter((candidate) => candidate.life > 0).length !== 1
+      )
+        continue;
+      const repeatable = card.effects.find(
+        (effect) => effect.kind === 'repeatable',
+      );
+      if (
+        monster.attacked &&
+        !self.permissions.unlimitedAttacks &&
+        state.environment?.card.cardId !== '355' &&
+        !(repeatable && monster.repeatableGroup === repeatable.group)
+      )
+        continue;
+      if (monster.statuses.some((status) => status.kind === 'cannot-attack'))
+        continue;
+      if (
+        monster.statuses.some((status) => status.kind === 'cocoon') &&
+        card.handler !== 'emerge'
+      )
+        continue;
+      if (!canPay(self, effectiveCost(state, player, [instance]))) continue;
+      if (card.type === 'SPE') {
+        if (state.environment?.card.cardId === '257') continue;
+        if (card.handler === 'take-over') {
+          self.monsters.forEach((ally, allyIndex) => {
+            if (ally.life <= 0 && allyIndex !== attacker)
+              actions.push({
+                id: `special:${instance.instanceId}:take-over:${attacker}:${allyIndex}`,
+                kind: 'special',
+                label: `${card.name} → ${MONSTER_BY_ID[ally.definitionId].name}`,
+                detail: 'Transfer remaining Life to a KO monster.',
+                cardInstanceIds: [instance.instanceId],
+                modifierInstanceIds: [],
+                attackerMonster: attacker,
+                target: { player, monster: allyIndex },
+                scoreHint: 12,
+              });
+          });
+          continue;
+        }
+        if (card.handler === 'emerge') {
+          if (!monster.statuses.some((status) => status.kind === 'cocoon'))
+            continue;
+          const teammateNames = self.monsters
+            .filter((_, index) => index !== attacker)
+            .map((ally) => MONSTER_BY_ID[ally.definitionId].logicalId);
+          MONSTERS.filter(
+            (candidate) =>
+              candidate.breedType === 'mixed' &&
+              candidate.subBreed === 'Worm' &&
+              !teammateNames.includes(candidate.logicalId),
+          ).forEach((candidate) =>
             actions.push({
-              id: `special:${instance.instanceId}:heal:${index}`,
+              id: `special:${instance.instanceId}:emerge:${attacker}:${candidate.logicalId}`,
               kind: 'special',
-              label: card.name,
-              detail: `Heal ${MONSTER_BY_ID[ally.definitionId].name} by 3`,
+              label: `${card.name} → ${candidate.name}`,
+              detail: `Emerge as ${candidate.name}.`,
               cardInstanceIds: [instance.instanceId],
               modifierInstanceIds: [],
               attackerMonster: attacker,
-              target: { player, monster: index },
-              scoreHint: 9,
-            });
-        });
-      } else {
-        actions.push({
-          id: `special:${instance.instanceId}:${card.id}`,
-          kind: 'special',
-          label: card.name,
-          detail: card.text,
-          cardInstanceIds: [instance.instanceId],
-          modifierInstanceIds: [],
-          attackerMonster: attacker,
-          target: null,
-          scoreHint: card.id === '082' ? 7 : 5,
-        });
+              target: { player, monster: attacker },
+              replacementMonsterId: candidate.defaultPrintId,
+              scoreHint: 12,
+            }),
+          );
+          continue;
+        }
+        const heal = card.effects.find((effect) => effect.kind === 'heal');
+        const targetOpponent = card.effects.some(
+          (effect) =>
+            effect.kind === 'attack-lock' && effect.target === 'damaged',
+        );
+        if (heal) {
+          self.monsters.forEach((ally, allyIndex) => {
+            if (
+              ally.life > 0 &&
+              ally.life < MONSTER_BY_ID[ally.definitionId].life
+            )
+              actions.push({
+                id: `special:${instance.instanceId}:heal:${allyIndex}:${attacker}`,
+                kind: 'special',
+                label: card.name,
+                detail: `Heal ${MONSTER_BY_ID[ally.definitionId].name} by ${heal.amount}`,
+                cardInstanceIds: [instance.instanceId],
+                modifierInstanceIds: [],
+                attackerMonster: attacker,
+                target: { player, monster: allyIndex },
+                scoreHint: heal.amount * 3,
+              });
+          });
+        } else if (targetOpponent) {
+          targets.forEach(({ ref }) =>
+            actions.push({
+              id: `special:${instance.instanceId}:${card.id}:${attacker}:${ref.player}-${ref.monster}`,
+              kind: 'special',
+              label: card.name,
+              detail: card.text,
+              cardInstanceIds: [instance.instanceId],
+              modifierInstanceIds: [],
+              attackerMonster: attacker,
+              target: ref,
+              scoreHint: 6,
+            }),
+          );
+        } else {
+          actions.push({
+            id: `special:${instance.instanceId}:${card.id}:${attacker}`,
+            kind: 'special',
+            label: card.name,
+            detail: card.text,
+            cardInstanceIds: [instance.instanceId],
+            modifierInstanceIds: [],
+            attackerMonster: attacker,
+            target: null,
+            scoreHint: card.effects.some(
+              (effect) => effect.kind === 'lock-defense',
+            )
+              ? 7
+              : 5,
+          });
+        }
+        continue;
       }
-      continue;
+      const restriction = card.effects.find(
+        (effect) => effect.kind === 'target-restriction',
+      );
+      targets
+        .filter(
+          ({ monster: targetMonster }) =>
+            !restriction || targetMonster.attribute === restriction.attribute,
+        )
+        .forEach(({ ref }) => {
+          actions.push(attackAction(state, [instance], attacker, ref));
+          for (const modifier of modifiers) {
+            if (
+              compatible(modifier.cardId, monster) &&
+              canPay(self, effectiveCost(state, player, [instance, modifier]))
+            )
+              actions.push(
+                attackAction(state, [instance], attacker, ref, modifier),
+              );
+          }
+        });
     }
-    targets.forEach(({ ref }) => {
-      actions.push(attackAction(state, [instance], attacker, ref));
-      if (monster.life <= 2)
-        for (const modifier of modifiers)
-          if (canPay(self, card.guts + CARD_BY_ID[modifier.cardId].guts))
-            actions.push(
-              attackAction(state, [instance], attacker, ref, modifier),
-            );
-    });
   }
 
   const comboCards = self.hand.filter((instance) =>
@@ -410,7 +756,73 @@ export function getLegalActions(state: GameState): LegalAction[] {
         }
       }
   }
-  return actions;
+  for (const instance of self.hand) {
+    const pair = CARD_BY_ID[instance.cardId]?.effects.find(
+      (effect) => effect.kind === 'pair-combo',
+    );
+    if (!pair) continue;
+    const mate = self.hand.find(
+      (candidate) =>
+        candidate.instanceId !== instance.instanceId &&
+        pair.cardIds.includes(candidate.cardId),
+    );
+    if (!mate || instance.instanceId > mate.instanceId) continue;
+    const pairCard = CARD_BY_ID[instance.cardId];
+    const attacker = ownerMonster(
+      state,
+      player,
+      pairCard.owner,
+      pairCard.type as 'POW' | 'INT',
+    );
+    if (attacker < 0 || self.monsters[attacker].attacked) continue;
+    targets.forEach(({ ref }) =>
+      actions.push(attackAction(state, [instance, mate], attacker, ref)),
+    );
+  }
+  const environmentId = state.environment?.card.cardId;
+  return actions.filter((action) => {
+    if (action.kind !== 'attack') return true;
+    if (environmentId === '119' && (action.estimatedDamage ?? 0) <= 3)
+      return false;
+    if (environmentId === '258' && (action.estimatedDamage ?? 0) >= 4)
+      return false;
+    if (action.target) {
+      const affected = baseTargets(
+        state,
+        player,
+        action.attackerMonster ?? 0,
+        CARD_BY_ID[
+          self.hand.find((instance) =>
+            action.cardInstanceIds.includes(instance.instanceId),
+          )?.cardId ?? action.cardInstanceIds[0]
+        ]?.id ?? '',
+        action.target,
+      );
+      if (
+        affected.some((target) =>
+          state.players[target.player].monsters[target.monster].statuses.some(
+            (status) => status.kind === 'attack-protection',
+          ),
+        )
+      )
+        return false;
+      const taunted = enemy.monsters
+        .map((monster, index) => ({ monster, index }))
+        .filter(({ monster }) =>
+          monster.statuses.some((status) => status.kind === 'taunt'),
+        );
+      if (
+        taunted.length &&
+        !taunted.some(({ index }) =>
+          affected.some(
+            (target) => target.player === other(player) && target.monster === index,
+          ),
+        )
+      )
+        return false;
+    }
+    return true;
+  });
 }
 
 export function getLegalDefenses(state: GameState): LegalDefense[] {
@@ -424,7 +836,7 @@ export function getLegalDefenses(state: GameState): LegalDefense[] {
     if (
       !card ||
       !['DGE', 'BLK'].includes(card.type) ||
-      !canPay(defender, card.guts)
+      !canPay(defender, effectiveCost(state, target.player, [instance]))
     )
       continue;
     for (
@@ -434,24 +846,42 @@ export function getLegalDefenses(state: GameState): LegalDefense[] {
     ) {
       const monster = defender.monsters[monsterIndex];
       if (monster.life <= 0 || !compatible(instance.cardId, monster)) continue;
+      if (monster.statuses.some((status) => status.kind === 'anger')) continue;
       const dodge = card.effects.find((effect) => effect.kind === 'dodge');
       const block = card.effects.find((effect) => effect.kind === 'block');
+      const blockHalf = card.effects.find(
+        (effect) => effect.kind === 'block-half',
+      );
       const reflect = card.effects.find((effect) => effect.kind === 'reflect');
       const redirect = card.effects.find(
         (effect) => effect.kind === 'redirect',
       );
-      if (!dodge && !block && !reflect && !redirect) continue;
+      if (!dodge && !block && !blockHalf && !reflect && !redirect) continue;
       if (!redirect && monsterIndex !== target.monster) continue;
       if (redirect && monsterIndex === target.monster) continue;
       if (
         dodge &&
         (pending.undodgeable ||
           defender.dodgeLocked ||
+          (state.environment?.card.cardId === '255' &&
+            pending.attackerMonster !== null &&
+            MONSTER_BY_ID[
+              state.players[pending.sourcePlayer].monsters[
+                pending.attackerMonster
+              ].definitionId
+            ].breedType === 'pure' &&
+            MONSTER_BY_ID[monster.definitionId].breedType === 'mixed') ||
           !dodge.against.includes(pending.type) ||
           (dodge.minPrintedGuts ?? 0) > pending.printedGuts)
       )
         continue;
-      if (block && !block.against.includes(pending.type)) continue;
+      if (
+        (block || blockHalf) &&
+        (defender.blockLocked ||
+          pending.unblockable ||
+          !(block?.against ?? blockHalf?.against ?? []).includes(pending.type))
+      )
+        continue;
       if (reflect && reflect.against !== pending.type) continue;
       results.push({
         instanceId: instance.instanceId,
@@ -460,8 +890,11 @@ export function getLegalDefenses(state: GameState): LegalDefense[] {
         detail: `${card.guts} Guts · ${card.text}`,
         scoreHint: dodge
           ? pending.workingDamage * 3
-          : block
-            ? Math.min(block.reduce, pending.workingDamage) * 2
+          : block || blockHalf
+            ? Math.min(
+                block?.reduce ?? Math.ceil(pending.workingDamage / 2),
+                pending.workingDamage,
+              ) * 2
             : redirect
               ? 2
               : pending.workingDamage,
@@ -515,7 +948,13 @@ function finishPending(state: GameState) {
   const pending = state.pendingAttack!;
   const source = state.players[pending.sourcePlayer];
   const foe = state.players[other(pending.sourcePlayer)];
-  if (pending.hitAny && pending.gutsLoss) {
+  if (
+    pending.hitAny &&
+    pending.gutsLoss &&
+    !foe.monsters.some((monster) =>
+      monster.statuses.some((status) => status.kind === 'negate-guts-loss'),
+    )
+  ) {
     const count =
       pending.gutsLoss === 'all'
         ? foe.guts.length
@@ -541,7 +980,9 @@ function finishPending(state: GameState) {
         attacker.life + pending.totalDamage,
       );
   }
-  source.discard.push(...pending.attackCards, ...pending.modifierCards);
+  if (pending.returnToHand) source.hand.push(...pending.attackCards);
+  else source.discard.push(...pending.attackCards);
+  source.discard.push(...pending.modifierCards);
   state.pendingAttack = null;
   checkWinner(state, pending.sourcePlayer);
   if (state.phase !== 'gameover') state.phase = 'attack';
@@ -553,9 +994,17 @@ function resolveCurrentTarget(state: GameState) {
   const monster = state.players[target.player].monsters[target.monster];
   const beforeLife = monster.life;
   let amount = Math.max(0, pending.workingDamage);
+  if (monster.statuses.some((status) => status.kind === 'damage-immunity'))
+    amount = 0;
   if (pending.preventKo && amount >= monster.life)
     amount = Math.max(0, monster.life - 1);
   monster.life = Math.max(0, monster.life - amount);
+  if (amount > 0 && pending.locksDamagedMonster)
+    monster.statuses.push({
+      kind: 'cannot-attack',
+      appliedTurn: state.turn,
+      expiresTurn: state.turn + 1,
+    });
   pending.hitAny ||= amount > 0;
   pending.totalDamage += amount;
   addEvent(
@@ -590,10 +1039,7 @@ function executeAction(state: GameState, action: LegalAction) {
   const cards = removeHandCards(source, action.cardInstanceIds);
   const modifiers = removeHandCards(source, action.modifierInstanceIds);
   const card = CARD_BY_ID[cards[0].cardId];
-  const cost = [...cards, ...modifiers].reduce(
-    (sum, instance) => sum + CARD_BY_ID[instance.cardId].guts,
-    0,
-  );
+  const cost = effectiveCost(state, sourceIndex, [...cards, ...modifiers]);
   payGuts(state, sourceIndex, cost);
   if (action.attackerMonster !== null) {
     source.monsters[action.attackerMonster].attacked = true;
@@ -627,9 +1073,268 @@ function executeAction(state: GameState, action: LegalAction) {
           ...foe.hand.splice(Math.floor(random(state) * foe.hand.length), 1),
         );
     }
-    if (card.effects.some((effect) => effect.kind === 'lock-dodge'))
-      state.players[other(sourceIndex)].dodgeLocked = true;
-    source.discard.push(...cards, ...modifiers);
+    const foe = state.players[other(sourceIndex)];
+    const lockDefense = card.effects.find(
+      (effect) => effect.kind === 'lock-defense',
+    );
+    if (
+      card.effects.some((effect) => effect.kind === 'lock-dodge') ||
+      lockDefense?.defense === 'DGE'
+    )
+      foe.dodgeLocked = true;
+    if (lockDefense?.defense === 'BLK') foe.blockLocked = true;
+    const attackLock = card.effects.find(
+      (effect) => effect.kind === 'attack-lock',
+    );
+    if (attackLock?.target === 'opponents') {
+      foe.monsters.forEach((monster) =>
+        monster.statuses.push({
+          kind: 'cannot-attack',
+          appliedTurn: state.turn,
+          expiresTurn: state.turn + 1,
+        }),
+      );
+    } else if (attackLock && action.target) {
+      state.players[action.target.player].monsters[
+        action.target.monster
+      ].statuses.push({
+        kind: 'cannot-attack',
+        appliedTurn: state.turn,
+        expiresTurn: state.turn + 1,
+      });
+    }
+    const attributeChange = card.effects.find(
+      (effect) => effect.kind === 'attribute-change',
+    );
+    if (attributeChange) {
+      const changed =
+        attributeChange.target === 'all'
+          ? state.players.flatMap((playerState) => playerState.monsters)
+          : attributeChange.target === 'all-allies'
+            ? source.monsters
+            : action.attackerMonster === null
+              ? []
+              : [source.monsters[action.attackerMonster]];
+      changed.forEach((monster) => {
+        monster.attribute = attributeChange.attribute;
+        if (attributeChange.duration !== 'environment')
+          monster.statuses.push({
+            kind: 'temporary-attribute',
+            attribute: attributeChange.attribute,
+            appliedTurn: state.turn,
+            expiresTurn: state.turn + 1,
+          });
+      });
+    }
+    if (card.effects.some((effect) => effect.kind === 'damage-immunity') && action.attackerMonster !== null)
+      source.monsters[action.attackerMonster].statuses.push({
+        kind: 'damage-immunity',
+        appliedTurn: state.turn,
+        expiresTurn: state.turn + 1,
+      });
+    if (card.effects.some((effect) => effect.kind === 'skip-turn'))
+      foe.skipNextTurn = true;
+    if (card.id === '126') {
+      for (const playerState of state.players)
+        playerState.discard.push(...playerState.guts.splice(0).reverse());
+    }
+    if (card.id === '197') source.permissions.extraBreeders = true;
+    if (card.id === '276') source.permissions.extraBreeders = true;
+    if (['083', '175', '294'].includes(card.id))
+      source.permissions.unlimitedAttacks = true;
+    if (card.id === '250') source.permissions.unlimitedAttacks = true;
+    if (card.id === '342') source.permissions.freeSpecials = true;
+    if (card.id === '057' && action.attackerMonster !== null)
+      source.monsters[action.attackerMonster].statuses.push({
+        kind: 'attack-protection',
+        appliedTurn: state.turn,
+        expiresTurn: state.turn + 2,
+      });
+    if (card.id === '245' && action.attackerMonster !== null)
+      source.monsters[action.attackerMonster].statuses.push({
+        kind: 'negate-guts-loss',
+        appliedTurn: state.turn,
+        expiresTurn: state.turn + 2,
+      });
+    if (card.id === '251' && action.attackerMonster !== null)
+      source.monsters[action.attackerMonster].statuses.push({
+        kind: 'anger',
+        appliedTurn: state.turn,
+        expiresTurn: state.turn + 2,
+      });
+    if ((card.id === '269' || card.effects.some((effect) => effect.kind === 'taunt')) && action.attackerMonster !== null)
+      source.monsters[action.attackerMonster].statuses.push({
+        kind: 'taunt',
+        appliedTurn: state.turn,
+        expiresTurn: state.turn + 2,
+      });
+    if (card.id === '114')
+      source.guts.push(...source.drawPile.splice(0, 5));
+    if (card.id === '125' && action.attackerMonster !== null) {
+      const sacrificed = source.monsters[action.attackerMonster];
+      const amount = sacrificed.life;
+      sacrificed.life = 0;
+      source.guts.push(
+        ...source.discard.splice(Math.max(0, source.discard.length - amount), amount),
+      );
+    }
+    if (card.id === '127') source.guts.push(...source.drawPile.splice(0));
+    if (card.id === '252') {
+      source.drawPile = shuffle(
+        [...source.drawPile, ...source.guts.splice(0)],
+        Math.floor(random(state) * 0xffffffff),
+      );
+    }
+    if (card.id === '254' && action.target)
+      source.monsters[action.target.monster].attacked = false;
+    if (card.id === '351' && action.target)
+      source.monsters[action.target.monster].statuses = source.monsters[
+        action.target.monster
+      ].statuses.filter((status) => status.kind !== 'cannot-attack');
+    if (card.id === '279') {
+      const amount = source.hand.length;
+      source.discard.push(...source.hand.splice(0));
+      if (source.drawPile.length < amount) {
+        state.winner = other(sourceIndex);
+        state.phase = 'gameover';
+      } else source.hand.push(...source.drawPile.splice(0, amount));
+    }
+    if (card.id === '304' && foe.hand.length) {
+      const [chosen] = foe.hand.splice(
+        Math.floor(random(state) * foe.hand.length),
+        1,
+      );
+      foe.discard.push(chosen);
+    }
+    if (card.id === '306')
+      foe.discard.push(...foe.drawPile.splice(0, Math.min(3, foe.drawPile.length)));
+    if (['186', '303'].includes(card.id) && action.attackerMonster !== null) {
+      const wantedType = card.id === '186' ? ['DGE'] : ['POW', 'INT'];
+      const retrievedIndex = source.discard.findLastIndex((instance) => {
+        const definition = CARD_BY_ID[instance.cardId];
+        return (
+          wantedType.includes(definition.type) &&
+          compatible(instance.cardId, source.monsters[action.attackerMonster!])
+        );
+      });
+      if (retrievedIndex >= 0)
+        source.hand.push(...source.discard.splice(retrievedIndex, 1));
+    }
+    if (card.id === '278') {
+      const lost = foe.guts.pop();
+      if (lost) foe.discard.push(lost);
+    }
+    if (card.id === '364') {
+      source.discard.push(...source.hand.splice(0));
+      foe.discard.push(...foe.hand.splice(0));
+    }
+    if (card.handler === 'riddler') {
+      foe.drawPile.push(...foe.hand.splice(0));
+      if (foe.drawPile.length < 4) {
+        state.winner = sourceIndex;
+        state.phase = 'gameover';
+      } else foe.hand.push(...foe.drawPile.splice(0, 4));
+    }
+    if (card.handler === 'resurrection') {
+      const phoenix = action.target
+        ? source.monsters[action.target.monster]
+        : undefined;
+      if (phoenix) {
+        phoenix.life = 4;
+        phoenix.attacked = true;
+      }
+    }
+    if (card.handler === 'take-over' && action.attackerMonster !== null && action.target) {
+      const donor = source.monsters[action.attackerMonster];
+      const revived = source.monsters[action.target.monster];
+      revived.life = Math.min(
+        MONSTER_BY_ID[revived.definitionId].life,
+        donor.life,
+      );
+      revived.attacked = true;
+      donor.life = 0;
+    }
+    if (card.handler === 'cocoon' && action.attackerMonster !== null)
+      source.monsters[action.attackerMonster].statuses.push({
+        kind: 'cocoon',
+        appliedTurn: state.turn,
+        expiresTurn: Number.MAX_SAFE_INTEGER,
+      });
+    if (
+      card.handler === 'emerge' &&
+      action.attackerMonster !== null &&
+      action.replacementMonsterId
+    ) {
+      const transformed = source.monsters[action.attackerMonster];
+      const from = transformed.definitionId;
+      const replacement = MONSTER_BY_ID[action.replacementMonsterId];
+      transformed.definitionId = action.replacementMonsterId;
+      transformed.life = replacement.life;
+      transformed.attribute = replacement.attribute;
+      transformed.attacked = true;
+      transformed.statuses = transformed.statuses.filter(
+        (status) => status.kind !== 'cocoon',
+      );
+      state.transformationHistory.push({
+        turn: state.turn,
+        player: sourceIndex,
+        monster: action.attackerMonster,
+        from,
+        to: action.replacementMonsterId,
+      });
+    }
+    if (
+      card.handler === 'fusion' &&
+      action.replacementMonsterId &&
+      action.sacrificedMonsters?.length === 2
+    ) {
+      const [slot, consumed] = action.sacrificedMonsters;
+      const transformed = source.monsters[slot];
+      const from = transformed.definitionId;
+      const replacement = MONSTER_BY_ID[action.replacementMonsterId];
+      source.monsters[consumed].life = 0;
+      transformed.definitionId = action.replacementMonsterId;
+      transformed.life = replacement.life;
+      transformed.attribute = replacement.attribute;
+      transformed.attacked = true;
+      transformed.statuses = [];
+      state.transformationHistory.push({
+        turn: state.turn,
+        player: sourceIndex,
+        monster: slot,
+        from,
+        to: action.replacementMonsterId,
+      });
+    }
+    if (card.type === 'ENV') {
+      if (state.environment) {
+        state.players[state.environment.owner].discard.push(
+          state.environment.card,
+        );
+      }
+      state.players.forEach((playerState) =>
+        playerState.monsters.forEach((monster) => {
+          if (
+            !monster.statuses.some(
+              (status) =>
+                status.kind === 'jump' ||
+                status.kind === 'temporary-attribute',
+            )
+          )
+            monster.attribute = MONSTER_BY_ID[monster.definitionId].attribute;
+        }),
+      );
+      state.environment = { card: cards[0], owner: sourceIndex };
+      const environmentAttribute = card.effects.find(
+        (effect) => effect.kind === 'attribute-change',
+      );
+      if (environmentAttribute)
+        state.players.forEach((playerState) =>
+          playerState.monsters.forEach((monster) => {
+            monster.attribute = environmentAttribute.attribute;
+          }),
+        );
+    } else source.discard.push(...cards, ...modifiers);
     addEvent(
       state,
       'play',
@@ -643,6 +1348,7 @@ function executeAction(state: GameState, action: LegalAction) {
         role: 'special',
       },
     );
+    checkWinner(state, sourceIndex);
     return;
   }
 
@@ -650,18 +1356,39 @@ function executeAction(state: GameState, action: LegalAction) {
   const combo = definitions[0].effects.find(
     (effect) => effect.kind === 'combo',
   );
+  const pairCombo = definitions[0].effects.find(
+    (effect) => effect.kind === 'pair-combo',
+  );
   let damage =
     combo && cards.length > 1
       ? cards.length === 3
         ? combo.threeDamage
         : combo.twoDamage
-      : (card.damage ?? 0);
-  if (
-    modifiers.length &&
-    action.attackerMonster !== null &&
-    source.monsters[action.attackerMonster].life <= 2
-  )
-    damage *= 2;
+      : pairCombo && cards.length > 1
+        ? pairCombo.damage
+        : (card.damage ?? 0);
+  if (action.attackerMonster !== null) {
+    const attackerDefinition = MONSTER_BY_ID[
+      source.monsters[action.attackerMonster].definitionId
+    ];
+    for (const modifier of modifiers) {
+      for (const effect of CARD_BY_ID[modifier.cardId].effects) {
+        if (effect.kind !== 'attack-modifier') continue;
+        const applies =
+          !effect.condition ||
+          effect.condition === 'always' ||
+          (effect.condition === 'low-life' &&
+            source.monsters[action.attackerMonster].life <= 2) ||
+          (effect.condition === 'pure' && attackerDefinition.breedType === 'pure') ||
+          (effect.condition === 'deck-empty' && source.drawPile.length === 0);
+        if (!applies) continue;
+        damage =
+          effect.operation === 'add'
+            ? damage + effect.amount
+            : damage * effect.amount;
+      }
+    }
+  }
   if (
     action.attackerMonster !== null &&
     card.type === 'POW' &&
@@ -670,6 +1397,39 @@ function executeAction(state: GameState, action: LegalAction) {
     )
   )
     damage *= 2;
+  if (
+    action.attackerMonster !== null &&
+    source.monsters[action.attackerMonster].statuses.some(
+      (status) => status.kind === 'anger' && state.turn > status.appliedTurn,
+    )
+  )
+    damage *= 2;
+  if (action.target) {
+    const targetAttribute =
+      state.players[action.target.player].monsters[action.target.monster]
+        .attribute;
+    const attributeDamage = card.effects.find(
+      (effect) => effect.kind === 'attribute-damage',
+    );
+    if (attributeDamage?.attribute === targetAttribute)
+      damage *= attributeDamage.multiplier;
+  }
+  const environmentCard = state.environment
+    ? CARD_BY_ID[state.environment.card.cardId]
+    : undefined;
+  for (const effect of environmentCard?.effects ?? []) {
+    if (effect.kind === 'attack-modifier')
+      damage =
+        effect.operation === 'add'
+          ? damage + effect.amount
+          : damage * effect.amount;
+    if (
+      effect.kind === 'environment-damage' &&
+      effect.types.includes(card.type as 'POW' | 'INT')
+    )
+      damage += effect.amount;
+  }
+  damage = Math.max(0, damage);
   const targets = baseTargets(
     state,
     sourceIndex,
@@ -677,7 +1437,8 @@ function executeAction(state: GameState, action: LegalAction) {
     card.id,
     action.target!,
   );
-  const effects = definitions.flatMap((item) => item.effects);
+  const effects = [...definitions, ...modifiers.map((item) => CARD_BY_ID[item.cardId])]
+    .flatMap((item) => item.effects);
   const pending: PendingAttack = {
     sourcePlayer: sourceIndex,
     attackerMonster: action.attackerMonster,
@@ -701,6 +1462,11 @@ function executeAction(state: GameState, action: LegalAction) {
     gutsLoss:
       effects.find((effect) => effect.kind === 'guts-loss')?.amount ?? null,
     lifesteal: effects.some((effect) => effect.kind === 'lifesteal'),
+    unblockable: effects.some((effect) => effect.kind === 'unblockable'),
+    returnToHand: effects.some((effect) => effect.kind === 'return-to-hand'),
+    locksDamagedMonster: effects.some(
+      (effect) => effect.kind === 'attack-lock' && effect.target === 'damaged',
+    ),
   };
   state.pendingAttack = pending;
   state.phase = 'defense';
@@ -817,10 +1583,17 @@ export function reduceGame(
       const card = CARD_BY_ID[instance.cardId];
       state.pendingAttack.defenseCards ??= [];
       state.pendingAttack.defenseCards.push(instance);
-      payGuts(state, target.player, card.guts);
+      payGuts(
+        state,
+        target.player,
+        effectiveCost(state, target.player, [instance]),
+      );
       player.discard.push(instance);
       const dodge = card.effects.find((effect) => effect.kind === 'dodge');
       const block = card.effects.find((effect) => effect.kind === 'block');
+      const blockHalf = card.effects.find(
+        (effect) => effect.kind === 'block-half',
+      );
       const reflect = card.effects.find((effect) => effect.kind === 'reflect');
       const redirect = card.effects.find(
         (effect) => effect.kind === 'redirect',
@@ -833,6 +1606,10 @@ export function reduceGame(
         state.pendingAttack.workingDamage = Math.max(
           0,
           state.pendingAttack.workingDamage - block.reduce,
+        );
+      if (blockHalf)
+        state.pendingAttack.workingDamage = Math.floor(
+          state.pendingAttack.workingDamage / 2,
         );
       if (reflect) {
         const amount =
@@ -851,6 +1628,28 @@ export function reduceGame(
           kind: 'jump',
           appliedTurn: state.turn,
           expiresTurn: state.turn + 1,
+        });
+      }
+      const attributeChange = card.effects.find(
+        (effect) => effect.kind === 'attribute-change',
+      );
+      if (attributeChange) {
+        const affected =
+          attributeChange.target === 'all'
+            ? state.players.flatMap((playerState) => playerState.monsters)
+            : attributeChange.target === 'all-allies'
+              ? player.monsters.filter(
+                  (_, index) => card.id !== '270' || index !== defense.monster,
+                )
+              : [player.monsters[defense.monster]];
+        affected.forEach((monster) => {
+          monster.attribute = attributeChange.attribute;
+          monster.statuses.push({
+            kind: 'temporary-attribute',
+            attribute: attributeChange.attribute,
+            appliedTurn: state.turn,
+            expiresTurn: state.turn + 1,
+          });
         });
       }
       addEvent(
@@ -873,9 +1672,15 @@ export function reduceGame(
   } else if (command.type === 'finish-attacking' && state.phase === 'attack') {
     state.phase = 'guts';
   } else if (command.type === 'convert-guts' && state.phase === 'guts') {
+    if (
+      state.environment?.card.cardId === '283' &&
+      self.gutsConvertedThisTurn >= 2
+    )
+      return state;
     const moved = removeHandCards(self, [command.instanceId]);
     if (moved.length) {
       self.guts.push(...moved);
+      self.gutsConvertedThisTurn += moved.length;
       addEvent(
         state,
         'guts',
@@ -890,18 +1695,58 @@ export function reduceGame(
     }
   } else if (command.type === 'finish-turn' && state.phase === 'guts') {
     self.breederCardPlayed = false;
+    self.gutsConvertedThisTurn = 0;
+    self.permissions = {
+      extraBreeders: false,
+      unlimitedAttacks: false,
+      freeSpecials: false,
+    };
     self.monsters.forEach((monster) => {
       monster.attacked = false;
       monster.repeatableGroup = null;
       monster.statuses = monster.statuses.filter(
         (status) => status.expiresTurn > state.turn,
       );
-      if (!monster.statuses.some((status) => status.kind === 'jump'))
-        monster.attribute = MONSTER_BY_ID[monster.definitionId].attribute;
+      const temporary = [...monster.statuses]
+        .reverse()
+        .find(
+          (status) =>
+            status.kind === 'jump' || status.kind === 'temporary-attribute',
+        );
+      const environmentAttribute = state.environment
+        ? CARD_BY_ID[state.environment.card.cardId].effects.find(
+            (effect) => effect.kind === 'attribute-change',
+          )
+        : undefined;
+      monster.attribute =
+        temporary?.attribute ??
+        (temporary?.kind === 'jump' ? 'air' : undefined) ??
+        environmentAttribute?.attribute ??
+        MONSTER_BY_ID[monster.definitionId].attribute;
     });
+    if (state.environment?.card.cardId === '284')
+      self.discard.push(...self.hand.splice(0));
+    if (state.environment?.card.cardId === '260') {
+      self.monsters.forEach((monster) => {
+        if (monster.life > 0) monster.life = Math.max(0, monster.life - 1);
+      });
+      checkWinner(state, other(state.activePlayer));
+      if (state.winner !== null) return state;
+    }
     state.players[other(state.activePlayer)].dodgeLocked = false;
+    state.players[other(state.activePlayer)].blockLocked = false;
     state.activePlayer = other(state.activePlayer);
     state.turn += 1;
+    if (state.players[state.activePlayer].skipNextTurn) {
+      state.players[state.activePlayer].skipNextTurn = false;
+      addEvent(
+        state,
+        'system',
+        `${state.activePlayer === 0 ? 'Your' : "The rival's"} turn is skipped.`,
+      );
+      state.activePlayer = other(state.activePlayer);
+      state.turn += 1;
+    }
     state.phase = 'attack';
     replenish(state, state.activePlayer);
     if (state.winner === null)
@@ -923,6 +1768,7 @@ export function observeGame(
     perspective,
     turn: state.turn,
     phase: state.phase,
+    environment: copy(state.environment),
     self: copy(state.players[perspective]),
     opponent: {
       deckId: opponent.deckId,
@@ -930,7 +1776,11 @@ export function observeGame(
       monsters: copy(opponent.monsters),
       breederCardPlayed: opponent.breederCardPlayed,
       dodgeLocked: opponent.dodgeLocked,
+      blockLocked: opponent.blockLocked,
+      skipNextTurn: opponent.skipNextTurn,
       setupGuts: opponent.setupGuts,
+      gutsConvertedThisTurn: opponent.gutsConvertedThisTurn,
+      permissions: copy(opponent.permissions),
       handCount: opponent.hand.length,
       drawCount: opponent.drawPile.length,
       gutsCount: opponent.guts.length,

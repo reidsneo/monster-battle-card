@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Gamepad2,
+  Hammer,
   Map,
   Play,
   RotateCcw,
@@ -18,7 +19,14 @@ import { Button } from '@/components/ui/button';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { useGameTools } from '@/hooks/use-game-tools';
 import { createCampaign, OUTFIT_PALETTES } from '@/lib/game/campaign';
-import { loadCampaign, loadMatch, saveCampaign } from '@/lib/game/persistence';
+import {
+  getPlayerProfile,
+  listSavedDecks,
+  loadCampaign,
+  loadMatch,
+  saveCampaign,
+} from '@/lib/game/persistence';
+import { MONSTER_BY_ID } from '@/lib/game/cards';
 import type { OutfitPalette } from '@/lib/game/types';
 
 const starters = [
@@ -57,12 +65,37 @@ export default function Home() {
   const [outfit, setOutfit] = useState<OutfitPalette>('azure');
   const [canResume, setCanResume] = useState(false);
   const [hasCampaign, setHasCampaign] = useState(false);
+  const [quickCustom, setQuickCustom] = useState<{
+    id: string;
+    label: string;
+    monsters: string;
+    cards: string[];
+    color: string;
+  } | null>(null);
   useGameTools();
   useEffect(() => {
-    void Promise.all([loadMatch(), loadCampaign()]).then(
-      ([match, campaign]) => {
+    void Promise.all([
+      loadMatch(),
+      loadCampaign(),
+      listSavedDecks(),
+      getPlayerProfile(),
+    ]).then(
+      ([match, campaign, savedDecks, profile]) => {
         setCanResume(Boolean(match.state));
         setHasCampaign(Boolean(campaign));
+        const active = savedDecks.find((record) => record.id === profile.activeDeckId)?.deck;
+        if (active) {
+          setQuickCustom({
+            id: active.id,
+            label: active.name,
+            monsters: active.monsterIds.map((id) => MONSTER_BY_ID[id]?.name ?? id).join(' · '),
+            cards: active.monsterIds.map((id) =>
+              (MONSTER_BY_ID[id]?.image ?? `/card-art/detail/${id}.webp`).replace('/detail/', '/scene/'),
+            ),
+            color: active.color,
+          });
+          setStarter(active.id);
+        }
       },
     );
   }, []);
@@ -100,7 +133,7 @@ export default function Home() {
 
       {panel === 'menu' && (
         <section className="title-menu">
-          <button onClick={() => setPanel('journey')}>
+          <button onClick={() => { setStarter('miracle'); setPanel('journey'); }}>
             <Map />
             <span>
               <strong>New Journey</strong>
@@ -118,11 +151,11 @@ export default function Home() {
               <ChevronRight />
             </Link>
           )}
-          <button onClick={() => setPanel('quick')}>
+          <button onClick={() => { setStarter(quickCustom?.id ?? 'miracle'); setPanel('quick'); }}>
             <Gamepad2 />
             <span>
               <strong>Quick Duel</strong>
-              <small>Choose a starter and AI difficulty</small>
+              <small>Use a starter or your active custom deck</small>
             </span>
             <ChevronRight />
           </button>
@@ -141,6 +174,14 @@ export default function Home() {
             <span>
               <strong>Card Archive</strong>
               <small>Inspect the preserved card collection</small>
+            </span>
+            <ChevronRight />
+          </Link>
+          <Link href="/decks">
+            <Hammer />
+            <span>
+              <strong>Deck Case</strong>
+              <small>Build with all 366 skills and 65 monsters</small>
             </span>
             <ChevronRight />
           </Link>
@@ -182,6 +223,22 @@ export default function Home() {
             onValueChange={setStarter}
             className="title-decks"
           >
+            {panel === 'quick' && quickCustom && (
+              <label
+                htmlFor="starter-active-custom"
+                data-selected={starter === quickCustom.id}
+                style={{ '--deck-color': quickCustom.color } as React.CSSProperties}
+              >
+                <RadioGroupItem id="starter-active-custom" value={quickCustom.id} className="sr-only" />
+                <div>
+                  {quickCustom.cards.map((card, index) => (
+                    <img key={`${card}-${index}`} src={card.startsWith('/') ? card : `/card-art/full/${card}`} alt="" style={{ '--i': index } as React.CSSProperties} />
+                  ))}
+                </div>
+                <strong>{quickCustom.label}</strong>
+                <span>{quickCustom.monsters}</span>
+              </label>
+            )}
             {starters.map((deck) => (
               <label
                 key={deck.id}

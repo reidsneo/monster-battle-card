@@ -1,14 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import manifest from '../../public/card-manifest.json';
 import { chooseAiCommand } from './ai';
-import { MONSTERS, STARTER_CARDS } from './cards';
+import {
+  ALL_CARDS,
+  CARD_BY_ID,
+  MONSTERS,
+  MONSTER_BY_ID,
+  STARTER_CARDS,
+  validateCatalog,
+} from './cards';
 import {
   createCampaign,
   festivalUnlocked,
   NPCS,
   npcUnlocked,
 } from './campaign';
-import { NPC_DECKS, STARTER_DECKS, validateDeck } from './decks';
+import {
+  generateRandomDeck,
+  isCardCompatibleWithMonster,
+  NPC_DECKS,
+  STARTER_DECKS,
+  validateDeck,
+} from './decks';
 import {
   createGame,
   getLegalActions,
@@ -24,6 +37,14 @@ const instance = (cardId: string, tag = 'test'): CardInstance => ({
   cardId,
   instanceId: `${tag}-${cardId}`,
 });
+
+const countValues = (ids: string[]) =>
+  Object.values(
+    ids.reduce<Record<string, number>>((counts, id) => {
+      counts[id] = (counts[id] ?? 0) + 1;
+      return counts;
+    }, {}),
+  );
 
 function autoStep(state: GameState) {
   if (state.phase === 'setup-guts')
@@ -67,43 +88,25 @@ describe('verified content', () => {
     expect(manifest.grayWolfDefault).toBe('C-044V.png');
   });
 
-  it('authors every starter card as a structured implemented definition', () => {
+  it('authors the complete playable catalog with registered implementations', () => {
+    expect(ALL_CARDS).toHaveLength(366);
+    expect(new Set(ALL_CARDS.map((card) => card.id)).size).toBe(366);
     expect(STARTER_CARDS).toHaveLength(66);
-    expect(new Set(STARTER_CARDS.map((card) => card.id)).size).toBe(66);
     expect(
-      STARTER_CARDS.every(
-        (card) => card.implemented && card.image.endsWith(`${card.id}.webp`),
+      ALL_CARDS.every(
+        (card) =>
+          ['dsl', 'handler'].includes(card.implementation) &&
+          card.image.endsWith(`${card.id}.webp`) &&
+          card.visual.kind,
       ),
     ).toBe(true);
-    expect(MONSTERS).toHaveLength(9);
-    const kinds = new Set(
-      STARTER_CARDS.flatMap((card) =>
-        card.effects.map((effect) => effect.kind),
-      ),
-    );
-    expect(kinds).toEqual(
-      new Set([
-        'combo',
-        'undodgeable',
-        'aoe',
-        'self-damage',
-        'guts-loss',
-        'half-on-dodge',
-        'lifesteal',
-        'dodge',
-        'block',
-        'reflect',
-        'redirect',
-        'jump',
-        'draw',
-        'discard-opponent',
-        'heal',
-        'double-if-low-life',
-        'lock-dodge',
-        'prevent-ko',
-        'repeatable',
-      ]),
-    );
+    expect(MONSTERS).toHaveLength(65);
+    expect(MONSTERS.reduce((count, monster) => count + monster.prints.length, 0)).toBe(89);
+    expect(MONSTER_BY_ID['C-044'].selectedPrintId).toBe('C-044V');
+    expect(MONSTER_BY_ID['C-031R'].attribute).toBe('water');
+    expect(MONSTER_BY_ID['C-031RS'].logicalId).toBe('C-031');
+    expect(CARD_BY_ID['318'].image).toBe('/card-art/detail/318.webp');
+    expect(validateCatalog()).toEqual([]);
   });
 
   it.each(STARTER_DECKS)('$name is an exact legal starter fixture', (deck) => {
@@ -132,9 +135,33 @@ describe('verified content', () => {
     ).toBe(false);
   });
 
-  it('assigns a visual effect profile to every starter card', () => {
-    for (const card of STARTER_CARDS)
+  it('assigns an authored visual effect profile to every playable card', () => {
+    for (const card of ALL_CARDS)
       expect(effectProfile(card.id).kind).toBeTruthy();
+  });
+
+  it('enforces pure, mixed, and ??? breed compatibility by card role', () => {
+    const grayWolf = MONSTER_BY_ID['C-044'];
+    const hareHound = MONSTER_BY_ID['C-010'];
+    expect(isCardCompatibleWithMonster(CARD_BY_ID['001'], grayWolf)).toBe(true);
+    expect(isCardCompatibleWithMonster(CARD_BY_ID['011'], grayWolf)).toBe(true);
+    expect(isCardCompatibleWithMonster(CARD_BY_ID['001'], hareHound)).toBe(true);
+    expect(isCardCompatibleWithMonster(CARD_BY_ID['096'], hareHound)).toBe(true);
+    expect(isCardCompatibleWithMonster(CARD_BY_ID['011'], hareHound)).toBe(false);
+  });
+
+  it('generates deterministic legal full-pool rival decks', () => {
+    for (let seed = 1; seed <= 2000; seed += 1) {
+      const first = generateRandomDeck(seed);
+      const second = generateRandomDeck(seed);
+      expect(second).toEqual(first);
+      expect(first.skillIds).toHaveLength(50);
+      expect(validateDeck(first)).toEqual([]);
+      expect(first.skillIds.filter((id) => CARD_BY_ID[id].type === 'ENV').length).toBeLessThanOrEqual(2);
+      expect(Math.max(...countValues(first.skillIds))).toBeLessThanOrEqual(3);
+      expect(first.monsterIds).toHaveLength(3);
+      expect(new Set(first.monsterIds.map((id) => MONSTER_BY_ID[id].logicalId)).size).toBe(3);
+    }
   });
 });
 
@@ -340,6 +367,24 @@ describe('AI safety and completion', () => {
       entropy: 99,
     };
     expect(chooseAiCommand(request)).toEqual(chooseAiCommand(request));
+  });
+
+  it('completes seeded Quick Duels against generated full-pool rivals', () => {
+    for (let seed = 1; seed <= 25; seed += 1) {
+      let state = createGame({
+        playerDeckId: STARTER_DECKS[seed % STARTER_DECKS.length].id,
+        difficulty: seed % 3 === 0 ? 'hard' : seed % 3 === 1 ? 'easy' : 'normal',
+        seed,
+        duelContext: { mode: 'quick' },
+      });
+      let steps = 0;
+      while (state.phase !== 'gameover' && steps < 1800) {
+        state = autoStep(state);
+        steps += 1;
+      }
+      expect(state.phase, `seed ${seed} deadlocked`).toBe('gameover');
+      expect(state.winner).not.toBeNull();
+    }
   });
 
   for (const player of ['miracle', 'speed', 'powerful'] as const)

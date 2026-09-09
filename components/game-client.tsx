@@ -25,7 +25,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { chooseAiCommand } from '@/lib/game/ai';
 import { NPCS, OUTFIT_PALETTES, rivalForDeck } from '@/lib/game/campaign';
 import { CARD_BY_ID, MONSTER_BY_ID } from '@/lib/game/cards';
-import { DECK_BY_ID } from '@/lib/game/decks';
+import { DECK_BY_ID, validateDeck } from '@/lib/game/decks';
 import {
   createGame,
   getLegalActions,
@@ -36,6 +36,8 @@ import {
 import { filterActionSelection } from '@/lib/game/interaction';
 import {
   clearMatch,
+  getPlayerProfile,
+  listSavedDecks,
   loadCampaign,
   loadMatch,
   saveCampaign,
@@ -58,7 +60,7 @@ import type {
 } from '@/lib/game/types';
 
 const validDeck = (value: string | null): value is string =>
-  Boolean(value && value in DECK_BY_ID);
+  Boolean(value && value in DECK_BY_ID && validateDeck(DECK_BY_ID[value]).length === 0);
 const validDifficulty = (value: string | null): value is Difficulty =>
   ['easy', 'normal', 'hard'].includes(value ?? '');
 const DEFAULT_SETTINGS: PresentationSettings = {
@@ -209,7 +211,11 @@ export function GameClient() {
   useEffect(() => {
     let active = true;
     const start = async () => {
-      const campaign = await loadCampaign();
+      const [, campaign, profile] = await Promise.all([
+        listSavedDecks(),
+        loadCampaign(),
+        getPlayerProfile(),
+      ]);
       if (!active) return;
       if (campaign) setOutfit(campaign.outfit);
       if (params.get('resume') === '1') {
@@ -224,11 +230,20 @@ export function GameClient() {
       const npcId = params.get('npc');
       const npc = npcId ? NPCS[npcId] : undefined;
       const campaignMode = params.get('mode') === 'campaign' && campaign && npc;
+      const requestedDeck = campaignMode
+        ? campaign.activeDeckId
+        : (params.get('deck') ?? profile.activeDeckId);
       const deck = campaignMode
-        ? campaign.starterDeckId
-        : validDeck(params.get('deck'))
-          ? params.get('deck')!
-          : 'miracle';
+        ? validDeck(requestedDeck)
+          ? requestedDeck
+          : 'miracle'
+        : validDeck(requestedDeck)
+          ? requestedDeck
+          : validDeck(profile.activeDeckId)
+            ? profile.activeDeckId
+            : 'miracle';
+      if (requestedDeck.startsWith('custom:') && !validDeck(requestedDeck))
+        setNotice('That custom deck needs editing before battle, so Miracle Team was loaded instead.');
       const difficulty = campaignMode
         ? npc.difficulty
         : validDifficulty(params.get('difficulty'))

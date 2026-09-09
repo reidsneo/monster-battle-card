@@ -61,6 +61,11 @@ export function chooseAiCommand(request: AiRequest): GameCommand {
     return { type: 'play-action', actionId: choice.id };
   }
   if (observation.phase === 'guts') {
+    if (
+      observation.environment?.card.cardId === '283' &&
+      observation.self.gutsConvertedThisTurn >= 2
+    )
+      return { type: 'finish-turn' };
     if (observation.self.hand.length) return { type: 'convert-guts', instanceId: observation.self.hand[0].instanceId };
     return { type: 'finish-turn' };
   }
