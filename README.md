@@ -1,4 +1,4 @@
-# Monster Rancher Battle Card — local restoration
+# Monster Battle Card — local restoration of Monster Rancher Battle Card
 
 A private, offline, noncommercial fan remake of _Monster Farm Battle Card / Monster Rancher Battle Card_ (Game Boy). Built with React 19, TypeScript, Three.js / React Three Fiber, and an HTML HUD, bundled by vinext (Vite 8).
 
