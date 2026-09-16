@@ -30,10 +30,12 @@ export function phaseCue(
 ): BattlePresentationCue {
   const phase = override ?? phaseFromState(state);
   const owner =
-    phase === 'defense' && state.pendingAttack
-      ? (state.pendingAttack.targets[state.pendingAttack.targetCursor]
-          ?.player ?? state.activePlayer)
-      : state.activePlayer;
+    phase === 'setup'
+      ? 0
+      : phase === 'defense' && state.pendingAttack
+        ? (state.pendingAttack.targets[state.pendingAttack.targetCursor]
+            ?.player ?? state.activePlayer)
+        : state.activePlayer;
   return {
     id: `${state.turn}-${owner}-${phase}-${state.eventSequence}`,
     phase,

@@ -20,6 +20,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CardDetail } from '@/components/card-detail';
 import { Tabletop } from '@/components/tabletop';
+import { ChibiPortrait, NPC_COLORS } from '@/components/world/chibi-portrait';
+import { useDuelDirector } from '@/components/battle/use-duel-director';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { chooseAiCommand } from '@/lib/game/ai';
@@ -31,6 +33,7 @@ import {
   getLegalActions,
   getLegalDefenses,
   observeGame,
+  repairGameState,
   reduceGame,
 } from '@/lib/game/engine';
 import { filterActionSelection } from '@/lib/game/interaction';
@@ -44,23 +47,22 @@ import {
   saveMatch,
   saveReplay,
 } from '@/lib/game/persistence';
-import {
-  phaseCue,
-  phaseFromState,
-  presentationTargets,
-} from '@/lib/game/presentation';
+import { phaseFromState, presentationTargets } from '@/lib/game/presentation';
 import type {
   Difficulty,
   GameCommand,
   GameState,
   OutfitPalette,
   PlayerIndex,
-  PresentationPhase,
   PresentationSettings,
 } from '@/lib/game/types';
 
 const validDeck = (value: string | null): value is string =>
-  Boolean(value && value in DECK_BY_ID && validateDeck(DECK_BY_ID[value]).length === 0);
+  Boolean(
+    value &&
+    value in DECK_BY_ID &&
+    validateDeck(DECK_BY_ID[value]).length === 0,
+  );
 const validDifficulty = (value: string | null): value is Difficulty =>
   ['easy', 'normal', 'hard'].includes(value ?? '');
 const DEFAULT_SETTINGS: PresentationSettings = {
@@ -131,6 +133,8 @@ function AvatarHud({
   name,
   title,
   portrait,
+  variant = 'player',
+  characterColor,
   accent,
   state,
   thinking,
@@ -139,6 +143,8 @@ function AvatarHud({
   name: string;
   title: string;
   portrait: string;
+  variant?: string;
+  characterColor: string;
   accent: string;
   state: GameState;
   thinking?: boolean;
@@ -162,7 +168,13 @@ function AvatarHud({
         {thinking && <em>Choosing a move…</em>}
       </div>
       <div className="avatar-frame">
-        <img src={portrait} alt={`${name} portrait`} />
+        <ChibiPortrait
+          key={`${variant}-${characterColor}`}
+          variant={variant}
+          color={characterColor}
+          fallback={portrait}
+          name={name}
+        />
       </div>
     </section>
   );
@@ -176,10 +188,6 @@ export function GameClient() {
   const [selectedChain, setSelectedChain] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
   const [thinking, setThinking] = useState(false);
-  const [inputLocked, setInputLocked] = useState(true);
-  const [announcement, setAnnouncement] = useState<ReturnType<
-    typeof phaseCue
-  > | null>(null);
   const [discardOwner, setDiscardOwner] = useState<PlayerIndex | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [pauseOpen, setPauseOpen] = useState(false);
@@ -188,10 +196,12 @@ export function GameClient() {
   const [outfit, setOutfit] = useState<OutfitPalette>('azure');
   const workerRef = useRef<Worker | null>(null);
   const replaySaved = useRef(false);
-  const cueTimer = useRef<number | null>(null);
-  const cueFollowup = useRef<number | null>(null);
-  const seenEvent = useRef(0);
-  const phaseKey = useRef('');
+  const {
+    cue: presentationCue,
+    announcement,
+    inputLocked,
+    skip: skipPresentation,
+  } = useDuelDirector(state, settings, pauseOpen);
 
   useEffect(() => {
     const saved = window.localStorage.getItem('mrbc-presentation');
@@ -243,7 +253,9 @@ export function GameClient() {
             ? profile.activeDeckId
             : 'miracle';
       if (requestedDeck.startsWith('custom:') && !validDeck(requestedDeck))
-        setNotice('That custom deck needs editing before battle, so Miracle Team was loaded instead.');
+        setNotice(
+          'That custom deck needs editing before battle, so Miracle Team was loaded instead.',
+        );
       const difficulty = campaignMode
         ? npc.difficulty
         : validDifficulty(params.get('difficulty'))
@@ -275,6 +287,15 @@ export function GameClient() {
       active = false;
     };
   }, [params]);
+
+  useEffect(() => {
+    if (state?.phase !== 'defense') return;
+    const target =
+      state.pendingAttack?.targets[state.pendingAttack.targetCursor];
+    if (target && state.players[target.player]?.monsters[target.monster])
+      return;
+    setState((current) => (current ? repairGameState(current) : current));
+  }, [state]);
 
   useEffect(() => {
     if (!state) return;
@@ -333,7 +354,9 @@ export function GameClient() {
     if (
       !state ||
       inputLocked ||
-      (state.activePlayer !== 0 && state.phase !== 'defense')
+      (state.activePlayer !== 0 &&
+        state.phase !== 'defense' &&
+        state.phase !== 'setup-guts')
     )
       return [];
     if (state.phase === 'setup-guts' || state.phase === 'guts')
@@ -346,85 +369,6 @@ export function GameClient() {
   }, [actions, defenses, inputLocked, state]);
   const chainOptions = selection.chainOptions;
 
-  const runCue = useCallback(
-    (phase: PresentationPhase, owner: PlayerIndex, duration: number) => {
-      if (!state) return;
-      if (cueTimer.current) window.clearTimeout(cueTimer.current);
-      setAnnouncement({ ...phaseCue(state, phase), owner });
-      setInputLocked(true);
-      cueTimer.current = window.setTimeout(
-        () => {
-          setAnnouncement(null);
-          setInputLocked(false);
-        },
-        settings.reducedMotion ? 180 : duration / settings.speed,
-      );
-    },
-    [settings.reducedMotion, settings.speed, state],
-  );
-
-  useEffect(() => {
-    if (!state) return;
-    const latest = state.events.at(-1);
-    const nextPhaseKey = `${state.turn}-${state.activePlayer}-${state.phase}`;
-    if (latest && latest.id !== seenEvent.current) {
-      seenEvent.current = latest.id;
-      if (latest.kind === 'draw') {
-        if (cueFollowup.current) window.clearTimeout(cueFollowup.current);
-        runCue('draw', latest.data?.actor ?? state.activePlayer, 900);
-        cueFollowup.current = window.setTimeout(
-          () => runCue('attack', state.activePlayer, 900),
-          settings.reducedMotion ? 220 : 930 / settings.speed,
-        );
-        phaseKey.current = nextPhaseKey;
-        return;
-      }
-      if (latest.kind === 'play') {
-        setInputLocked(true);
-        const revealCount = Math.max(1, latest.data?.cardIds?.length ?? 1);
-        cueTimer.current = window.setTimeout(
-          () => setInputLocked(false),
-          settings.reducedMotion
-            ? 450
-            : (1750 + Math.max(0, revealCount - 1) * 600) / settings.speed,
-        );
-        return;
-      }
-      if (latest.kind === 'defense') {
-        setInputLocked(true);
-        const revealCount = Math.max(
-          1,
-          state.pendingAttack?.defenseCards.length ?? 1,
-        );
-        cueTimer.current = window.setTimeout(
-          () => setInputLocked(false),
-          settings.reducedMotion
-            ? 350
-            : (1150 + Math.max(0, revealCount - 1) * 600) / settings.speed,
-        );
-        return;
-      }
-      if (latest.kind === 'damage') {
-        setInputLocked(true);
-        cueTimer.current = window.setTimeout(
-          () => setInputLocked(false),
-          (settings.reducedMotion ? 300 : 1080) / settings.speed,
-        );
-        return;
-      }
-    }
-    if (phaseKey.current !== nextPhaseKey) {
-      phaseKey.current = nextPhaseKey;
-      runCue(phaseFromState(state), state.activePlayer, 900);
-    }
-  }, [runCue, settings.reducedMotion, settings.speed, state]);
-
-  const skipPresentation = useCallback(() => {
-    if (cueTimer.current) window.clearTimeout(cueTimer.current);
-    if (cueFollowup.current) window.clearTimeout(cueFollowup.current);
-    setAnnouncement(null);
-    setInputLocked(false);
-  }, []);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -446,7 +390,8 @@ export function GameClient() {
       !state ||
       state.phase === 'gameover' ||
       state.phase === 'setup-guts' ||
-      inputLocked
+      inputLocked ||
+      pauseOpen
     )
       return;
     const defenseTarget =
@@ -492,7 +437,7 @@ export function GameClient() {
       setThinking(false);
     }, 440);
     return () => window.clearTimeout(timer);
-  }, [actions, defenses, dispatch, inputLocked, state]);
+  }, [actions, defenses, dispatch, inputLocked, pauseOpen, state]);
 
   useEffect(() => {
     setSelectedChain([]);
@@ -500,8 +445,6 @@ export function GameClient() {
   useEffect(
     () => () => {
       workerRef.current?.terminate();
-      if (cueTimer.current) window.clearTimeout(cueTimer.current);
-      if (cueFollowup.current) window.clearTimeout(cueFollowup.current);
     },
     [],
   );
@@ -527,6 +470,14 @@ export function GameClient() {
   const rivalDeck = DECK_BY_ID[state.players[1].deckId];
   const playerPortrait = OUTFIT_PALETTES[outfit].portrait;
   const phase = phaseFromState(state);
+  const phaseOwner =
+    announcement?.owner ??
+    (state.phase === 'defense'
+      ? (state.pendingAttack?.targets[state.pendingAttack.targetCursor]
+          ?.player ?? state.activePlayer)
+      : state.phase === 'setup-guts'
+        ? 0
+        : state.activePlayer);
   const prompt =
     state.phase === 'setup-guts'
       ? `Choose up to two opening Guts (${state.selectedSetupCards.length}/2)`
@@ -548,6 +499,7 @@ export function GameClient() {
   const chooseHandCard = (instanceId: string) => {
     const instance = player.hand.find((item) => item.instanceId === instanceId);
     if (instance) setPreviewCard(instance.cardId);
+    if (inputLocked || pauseOpen) return;
     if (state.phase === 'setup-guts') {
       dispatch({ type: 'setup-toggle-guts', instanceId });
       return;
@@ -617,6 +569,10 @@ export function GameClient() {
           inputLocked={inputLocked || pauseOpen}
           reducedMotion={settings.reducedMotion}
           presentationSpeed={settings.speed}
+          presentationCue={presentationCue}
+          cameraMotion={settings.cameraMotion}
+          particleDensity={settings.particleDensity}
+          onAdvance={skipPresentation}
           onPreview={setPreviewCard}
           onInspect={setDetailCard}
           onHandCard={chooseHandCard}
@@ -630,6 +586,8 @@ export function GameClient() {
           name={rivalNpc.name}
           title={`${rivalNpc.title} · ${rivalDeck.name}`}
           portrait={rivalNpc.portrait}
+          variant={rivalNpc.id}
+          characterColor={NPC_COLORS[rivalNpc.id] ?? '#629d8b'}
           accent="#ff625c"
           state={state}
           thinking={thinking}
@@ -639,14 +597,15 @@ export function GameClient() {
           name="Breeder"
           title={deck.name}
           portrait={playerPortrait}
+          characterColor={OUTFIT_PALETTES[outfit].color}
           accent={OUTFIT_PALETTES[outfit].color}
           state={state}
         />
 
-        <section className="phase-orb" data-owner={state.activePlayer}>
+        <section className="phase-orb" data-owner={phaseOwner}>
           <small>TURN {state.turn}</small>
           <strong>{phase}</strong>
-          <span>{yourTurn ? 'YOUR PHASE' : 'RIVAL PHASE'}</span>
+          <span>{phaseOwner === 0 ? 'YOUR PHASE' : 'RIVAL PHASE'}</span>
           <div className="phase-actions">
             {state.phase === 'setup-guts' && !inputLocked && (
               <button onClick={() => dispatch({ type: 'finish-setup' })}>
@@ -722,6 +681,10 @@ export function GameClient() {
         {announcement && (
           <button
             className="phase-announcement"
+            key={announcement.id}
+            style={{
+              animationDuration: `${settings.reducedMotion ? 220 : 900 / settings.speed}ms`,
+            }}
             data-owner={announcement.owner}
             aria-live="assertive"
             aria-label={`${announcement.owner === 0 ? 'Your' : 'Rival'} ${announcement.title}`}
@@ -734,7 +697,7 @@ export function GameClient() {
             <span>Click or press Space to advance</span>
           </button>
         )}
-        {state.phase === 'gameover' && (
+        {state.phase === 'gameover' && !inputLocked && (
           <section className="battle-result">
             <Flag />
             <small>JOURNEY RECORD UPDATED</small>
@@ -902,6 +865,52 @@ export function GameClient() {
                   setSettings((current) => ({
                     ...current,
                     reducedMotion: event.target.checked,
+                  }))
+                }
+              />
+            </label>
+
+            <label className="switch-row">
+              <span>
+                <Settings /> Sound effects
+              </span>
+              <input
+                type="checkbox"
+                checked={!settings.effectsMuted}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    effectsMuted: !event.target.checked,
+                  }))
+                }
+              />
+            </label>
+            <label className="switch-row">
+              <span>
+                <Settings /> Cinematic camera
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.cameraMotion}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    cameraMotion: event.target.checked,
+                  }))
+                }
+              />
+            </label>
+            <label className="switch-row">
+              <span>
+                <Settings /> Rich particles
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.particleDensity === 'high'}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    particleDensity: event.target.checked ? 'high' : 'low',
                   }))
                 }
               />

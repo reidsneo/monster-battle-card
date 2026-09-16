@@ -27,6 +27,7 @@ import {
   getLegalActions,
   getLegalDefenses,
   observeGame,
+  repairGameState,
   reduceGame,
 } from './engine';
 import { buildCardActionIntents, filterActionSelection } from './interaction';
@@ -232,6 +233,45 @@ describe('deterministic engine', () => {
     expect(
       getLegalActions(state).some((item) => item.attackerMonster === 0),
     ).toBe(false);
+  });
+
+  it('does not offer an area attack when its target class is absent', () => {
+    const state = createGame('miracle', 'normal', 'speed', 42);
+    state.phase = 'attack';
+    state.activePlayer = 0;
+    state.players[0].monsters[0].definitionId = 'C-021';
+    state.players[0].hand = [instance('134')]; // Fire River: opponent ground only
+    state.players[0].guts = Array.from({ length: 4 }, (_, index) =>
+      instance('001', `g${index}`),
+    );
+    state.players[1].monsters.forEach((monster) => {
+      monster.attribute = 'air';
+    });
+    expect(getLegalActions(state).some((action) => action.label === 'Fire River')).toBe(false);
+
+    state.players[1].monsters[0].attribute = 'ground';
+    const action = getLegalActions(state).find((item) => item.label === 'Fire River');
+    expect(action).toBeTruthy();
+    const attacking = reduceGame(state, { type: 'play-action', actionId: action!.id });
+    expect(attacking.phase).toBe('defense');
+    expect(attacking.pendingAttack?.targets).toEqual([{ player: 1, monster: 0 }]);
+  });
+
+  it('recovers a saved defense response whose target list is empty', () => {
+    let state = createGame('miracle', 'normal', 'speed', 42);
+    state.players[0].hand = [instance('005')];
+    state.players[0].guts = Array.from({ length: 3 }, (_, index) =>
+      instance('001', `g${index}`),
+    );
+    const action = getLegalActions(state).find((item) => item.label === 'Stab')!;
+    state = reduceGame(state, { type: 'play-action', actionId: action.id });
+    state.pendingAttack!.targets = [];
+    expect(getLegalDefenses(state)).toEqual([]);
+    const restored = repairGameState(state);
+    expect(restored.phase).toBe('attack');
+    expect(restored.pendingAttack).toBeNull();
+    expect(restored.players[0].discard.some((card) => card.cardId === '005')).toBe(true);
+    expect(reduceGame(state, { type: 'pass-defense' }).phase).toBe('attack');
   });
 
   it('keeps Dodge illegal against an undodgeable attack while allowing compatible Blocks', () => {

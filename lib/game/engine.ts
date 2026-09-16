@@ -201,20 +201,18 @@ function ownerMonster(
   owner: string,
   type: 'POW' | 'INT' | 'SPE' | 'DGE' | 'BLK' = 'POW',
 ) {
-  return state.players[player].monsters.findIndex(
-    (monster) => {
-      const definition = MONSTER_BY_ID[monster.definitionId];
-      const defense = type === 'DGE' || type === 'BLK';
-      return (
-        monster.life > 0 &&
-        (definition.breedType === 'pure' || definition.subBreed === '???'
-          ? definition.mainBreed === owner
-          : defense
-            ? definition.subBreed === owner
-            : definition.mainBreed === owner)
-      );
-    },
-  );
+  return state.players[player].monsters.findIndex((monster) => {
+    const definition = MONSTER_BY_ID[monster.definitionId];
+    const defense = type === 'DGE' || type === 'BLK';
+    return (
+      monster.life > 0 &&
+      (definition.breedType === 'pure' || definition.subBreed === '???'
+        ? definition.mainBreed === owner
+        : defense
+          ? definition.subBreed === owner
+          : definition.mainBreed === owner)
+    );
+  });
 }
 
 function canPay(player: PlayerState, amount: number) {
@@ -300,7 +298,8 @@ function baseTargets(
       const monster = state.players[ref.player].monsters[ref.monster];
       return (
         monster.life > 0 &&
-        (effect.target === 'all-except-self' || monster.attribute === 'ground') &&
+        (effect.target === 'all-except-self' ||
+          monster.attribute === 'ground') &&
         !(ref.player === source && ref.monster === attacker)
       );
     });
@@ -329,7 +328,8 @@ function attackAction(
         ? pairCombo.damage
         : (definitions[0].damage ?? 0);
   if (attackerMonster !== null) {
-    const attacker = state.players[state.activePlayer].monsters[attackerMonster];
+    const attacker =
+      state.players[state.activePlayer].monsters[attackerMonster];
     const attackerDefinition = MONSTER_BY_ID[attacker.definitionId];
     for (const effect of modifier ? CARD_BY_ID[modifier.cardId].effects : []) {
       if (effect.kind !== 'attack-modifier') continue;
@@ -337,7 +337,8 @@ function attackAction(
         !effect.condition ||
         effect.condition === 'always' ||
         (effect.condition === 'low-life' && attacker.life <= 2) ||
-        (effect.condition === 'pure' && attackerDefinition.breedType === 'pure') ||
+        (effect.condition === 'pure' &&
+          attackerDefinition.breedType === 'pure') ||
         (effect.condition === 'deck-empty' &&
           state.players[state.activePlayer].drawPile.length === 0);
       if (applies)
@@ -381,11 +382,10 @@ function attackAction(
       damage += effect.amount;
   }
   damage = Math.max(0, damage);
-  const cost = effectiveCost(
-    state,
-    state.activePlayer,
-    [...cardInstances, ...(modifier ? [modifier] : [])],
-  );
+  const cost = effectiveCost(state, state.activePlayer, [
+    ...cardInstances,
+    ...(modifier ? [modifier] : []),
+  ]);
   const label =
     cardInstances.length > 1
       ? `${cardInstances.map((item) => CARD_BY_ID[item.cardId].name).join(' + ')} combo`
@@ -433,10 +433,7 @@ export function getLegalActions(state: GameState): LegalAction[] {
       continue;
     if (card.owner === 'Breeder') {
       if (self.breederCardPlayed && !self.permissions.extraBreeders) continue;
-      if (
-        state.environment?.card.cardId === '353' &&
-        card.type !== 'ENV'
-      )
+      if (state.environment?.card.cardId === '353' && card.type !== 'ENV')
         continue;
       const heal = card.effects.find((effect) => effect.kind === 'heal');
       if (
@@ -444,7 +441,10 @@ export function getLegalActions(state: GameState): LegalAction[] {
         (sourceHasActed(self) || self.drawPile.length < 5)
       )
         continue;
-      if (card.id === '127' && self.monsters.filter((monster) => monster.life > 0).length !== 1)
+      if (
+        card.id === '127' &&
+        self.monsters.filter((monster) => monster.life > 0).length !== 1
+      )
         continue;
       if (card.id === '254') {
         self.monsters.forEach((monster, index) => {
@@ -463,7 +463,9 @@ export function getLegalActions(state: GameState): LegalAction[] {
         });
       } else if (card.id === '351') {
         self.monsters.forEach((monster, index) => {
-          if (monster.statuses.some((status) => status.kind === 'cannot-attack'))
+          if (
+            monster.statuses.some((status) => status.kind === 'cannot-attack')
+          )
             actions.push({
               id: `special:${instance.instanceId}:cleanse:${index}`,
               kind: 'special',
@@ -504,8 +506,9 @@ export function getLegalActions(state: GameState): LegalAction[] {
             const first = MONSTER_BY_ID[alive[left].monster.definitionId];
             const second = MONSTER_BY_ID[alive[right].monster.definitionId];
             const survivors = self.monsters
-              .filter((_, index) =>
-                index !== alive[left].index && index !== alive[right].index,
+              .filter(
+                (_, index) =>
+                  index !== alive[left].index && index !== alive[right].index,
               )
               .map((monster) => MONSTER_BY_ID[monster.definitionId].logicalId);
             const replacement = MONSTERS.find(
@@ -515,7 +518,10 @@ export function getLegalActions(state: GameState): LegalAction[] {
                 monster.subBreed === second.subBreed &&
                 !survivors.includes(monster.logicalId),
             );
-            if (replacement && canPay(self, effectiveCost(state, player, [instance])))
+            if (
+              replacement &&
+              canPay(self, effectiveCost(state, player, [instance]))
+            )
               actions.push({
                 id: `special:${instance.instanceId}:fusion:${alive[left].index}-${alive[right].index}:${replacement.logicalId}`,
                 kind: 'special',
@@ -569,7 +575,9 @@ export function getLegalActions(state: GameState): LegalAction[] {
     }
     const attackers = self.monsters
       .map((monster, index) => ({ monster, index }))
-      .filter(({ monster }) => monster.life > 0 && compatible(card.id, monster));
+      .filter(
+        ({ monster }) => monster.life > 0 && compatible(card.id, monster),
+      );
     for (const { monster, index: attacker } of attackers) {
       if (['182', '241'].includes(card.id) && monster.life > 2) continue;
       if (card.id === '125' && self.discard.length < monster.life) continue;
@@ -798,6 +806,10 @@ export function getLegalActions(state: GameState): LegalAction[] {
         ]?.id ?? '',
         action.target,
       );
+      // A printed area attack can have no recipients (for example, an
+      // air-only attack when every opposing monster is grounded). Such an
+      // action must never open a defense response with an empty target list.
+      if (affected.length === 0) return false;
       if (
         affected.some((target) =>
           state.players[target.player].monsters[target.monster].statuses.some(
@@ -815,7 +827,8 @@ export function getLegalActions(state: GameState): LegalAction[] {
         taunted.length &&
         !taunted.some(({ index }) =>
           affected.some(
-            (target) => target.player === other(player) && target.monster === index,
+            (target) =>
+              target.player === other(player) && target.monster === index,
           ),
         )
       )
@@ -829,6 +842,8 @@ export function getLegalDefenses(state: GameState): LegalDefense[] {
   const pending = state.pendingAttack;
   if (state.phase !== 'defense' || !pending) return [];
   const target = pending.targets[pending.targetCursor];
+  if (!target || !state.players[target.player]?.monsters[target.monster])
+    return [];
   const defender = state.players[target.player];
   const results: LegalDefense[] = [];
   for (const instance of defender.hand) {
@@ -988,6 +1003,24 @@ function finishPending(state: GameState) {
   if (state.phase !== 'gameover') state.phase = 'attack';
 }
 
+/** Recover snapshots written before empty area attacks were ruled illegal. */
+export function repairGameState(state: GameState): GameState {
+  if (state.phase !== 'defense') return state;
+  const pending = state.pendingAttack;
+  const target = pending?.targets[pending.targetCursor];
+  if (target && state.players[target.player]?.monsters[target.monster])
+    return state;
+  const repaired = copy(state);
+  if (repaired.pendingAttack) finishPending(repaired);
+  else repaired.phase = 'attack';
+  addEvent(
+    repaired,
+    'system',
+    'An attack with no valid target was cleared so the battle can continue.',
+  );
+  return repaired;
+}
+
 function resolveCurrentTarget(state: GameState) {
   const pending = state.pendingAttack!;
   const target = pending.targets[pending.targetCursor];
@@ -1052,6 +1085,11 @@ function executeAction(state: GameState, action: LegalAction) {
 
   if (action.kind === 'special') {
     const heal = card.effects.find((effect) => effect.kind === 'heal');
+    const healingBeforeLife =
+      heal && action.target
+        ? state.players[action.target.player].monsters[action.target.monster]
+            .life
+        : undefined;
     if (heal && action.target) {
       const monster = source.monsters[action.target.monster];
       monster.life = Math.min(
@@ -1126,7 +1164,10 @@ function executeAction(state: GameState, action: LegalAction) {
           });
       });
     }
-    if (card.effects.some((effect) => effect.kind === 'damage-immunity') && action.attackerMonster !== null)
+    if (
+      card.effects.some((effect) => effect.kind === 'damage-immunity') &&
+      action.attackerMonster !== null
+    )
       source.monsters[action.attackerMonster].statuses.push({
         kind: 'damage-immunity',
         appliedTurn: state.turn,
@@ -1162,20 +1203,26 @@ function executeAction(state: GameState, action: LegalAction) {
         appliedTurn: state.turn,
         expiresTurn: state.turn + 2,
       });
-    if ((card.id === '269' || card.effects.some((effect) => effect.kind === 'taunt')) && action.attackerMonster !== null)
+    if (
+      (card.id === '269' ||
+        card.effects.some((effect) => effect.kind === 'taunt')) &&
+      action.attackerMonster !== null
+    )
       source.monsters[action.attackerMonster].statuses.push({
         kind: 'taunt',
         appliedTurn: state.turn,
         expiresTurn: state.turn + 2,
       });
-    if (card.id === '114')
-      source.guts.push(...source.drawPile.splice(0, 5));
+    if (card.id === '114') source.guts.push(...source.drawPile.splice(0, 5));
     if (card.id === '125' && action.attackerMonster !== null) {
       const sacrificed = source.monsters[action.attackerMonster];
       const amount = sacrificed.life;
       sacrificed.life = 0;
       source.guts.push(
-        ...source.discard.splice(Math.max(0, source.discard.length - amount), amount),
+        ...source.discard.splice(
+          Math.max(0, source.discard.length - amount),
+          amount,
+        ),
       );
     }
     if (card.id === '127') source.guts.push(...source.drawPile.splice(0));
@@ -1207,7 +1254,9 @@ function executeAction(state: GameState, action: LegalAction) {
       foe.discard.push(chosen);
     }
     if (card.id === '306')
-      foe.discard.push(...foe.drawPile.splice(0, Math.min(3, foe.drawPile.length)));
+      foe.discard.push(
+        ...foe.drawPile.splice(0, Math.min(3, foe.drawPile.length)),
+      );
     if (['186', '303'].includes(card.id) && action.attackerMonster !== null) {
       const wantedType = card.id === '186' ? ['DGE'] : ['POW', 'INT'];
       const retrievedIndex = source.discard.findLastIndex((instance) => {
@@ -1244,7 +1293,11 @@ function executeAction(state: GameState, action: LegalAction) {
         phoenix.attacked = true;
       }
     }
-    if (card.handler === 'take-over' && action.attackerMonster !== null && action.target) {
+    if (
+      card.handler === 'take-over' &&
+      action.attackerMonster !== null &&
+      action.target
+    ) {
       const donor = source.monsters[action.attackerMonster];
       const revived = source.monsters[action.target.monster];
       revived.life = Math.min(
@@ -1317,8 +1370,7 @@ function executeAction(state: GameState, action: LegalAction) {
           if (
             !monster.statuses.some(
               (status) =>
-                status.kind === 'jump' ||
-                status.kind === 'temporary-attribute',
+                status.kind === 'jump' || status.kind === 'temporary-attribute',
             )
           )
             monster.attribute = MONSTER_BY_ID[monster.definitionId].attribute;
@@ -1344,7 +1396,19 @@ function executeAction(state: GameState, action: LegalAction) {
         cardIds: [card.id],
         sourceMonster: action.attackerMonster,
         target: action.target ?? undefined,
-        amount: heal?.amount,
+        amount:
+          healingBeforeLife != null && action.target
+            ? state.players[action.target.player].monsters[
+                action.target.monster
+              ].life - healingBeforeLife
+            : undefined,
+        beforeLife: healingBeforeLife,
+        afterLife:
+          healingBeforeLife != null && action.target
+            ? state.players[action.target.player].monsters[
+                action.target.monster
+              ].life
+            : undefined,
         role: 'special',
       },
     );
@@ -1368,9 +1432,8 @@ function executeAction(state: GameState, action: LegalAction) {
         ? pairCombo.damage
         : (card.damage ?? 0);
   if (action.attackerMonster !== null) {
-    const attackerDefinition = MONSTER_BY_ID[
-      source.monsters[action.attackerMonster].definitionId
-    ];
+    const attackerDefinition =
+      MONSTER_BY_ID[source.monsters[action.attackerMonster].definitionId];
     for (const modifier of modifiers) {
       for (const effect of CARD_BY_ID[modifier.cardId].effects) {
         if (effect.kind !== 'attack-modifier') continue;
@@ -1379,7 +1442,8 @@ function executeAction(state: GameState, action: LegalAction) {
           effect.condition === 'always' ||
           (effect.condition === 'low-life' &&
             source.monsters[action.attackerMonster].life <= 2) ||
-          (effect.condition === 'pure' && attackerDefinition.breedType === 'pure') ||
+          (effect.condition === 'pure' &&
+            attackerDefinition.breedType === 'pure') ||
           (effect.condition === 'deck-empty' && source.drawPile.length === 0);
         if (!applies) continue;
         damage =
@@ -1437,8 +1501,10 @@ function executeAction(state: GameState, action: LegalAction) {
     card.id,
     action.target!,
   );
-  const effects = [...definitions, ...modifiers.map((item) => CARD_BY_ID[item.cardId])]
-    .flatMap((item) => item.effects);
+  const effects = [
+    ...definitions,
+    ...modifiers.map((item) => CARD_BY_ID[item.cardId]),
+  ].flatMap((item) => item.effects);
   const pending: PendingAttack = {
     sourcePlayer: sourceIndex,
     attackerMonster: action.attackerMonster,
@@ -1534,7 +1600,7 @@ export function reduceGame(
   previous: GameState,
   command: GameCommand,
 ): GameState {
-  const state = copy(previous);
+  const state = copy(repairGameState(previous));
   if (state.phase === 'gameover') return state;
   const self = state.players[state.activePlayer];
   if (command.type === 'setup-toggle-guts' && state.phase === 'setup-guts') {

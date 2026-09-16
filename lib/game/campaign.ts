@@ -38,14 +38,14 @@ export const OUTFIT_PALETTES: Record<
 export const WORLDS: Record<WorldAreaId, WorldDefinition> = {
   ranch: {
     id: 'ranch',
-    name: 'Ranch Grounds',
-    subtitle: 'Where every breeder begins',
+    name: 'Ranch Town',
+    subtitle: 'Komorebi shopping street',
     npcIds: ['mina', 'kiro', 'bram'],
   },
   festival: {
     id: 'festival',
     name: 'Festival Courtyard',
-    subtitle: 'The regional breeder trials',
+    subtitle: 'Lantern walk · Regional breeder trials',
     npcIds: ['lyra', 'rook', 'veyra'],
   },
 };

@@ -137,7 +137,7 @@ export default function Home() {
             <Map />
             <span>
               <strong>New Journey</strong>
-              <small>Explore the ranch and challenge six breeders</small>
+              <small>Explore the town and challenge six breeders</small>
             </span>
             <ChevronRight />
           </button>
@@ -295,7 +295,7 @@ export default function Home() {
                 ))}
               </RadioGroup>
               <Button size="lg" onClick={() => void beginJourney()}>
-                <Map /> Enter Ranch Grounds
+                <Map /> Enter Ranch Town
               </Button>
             </>
           ) : (

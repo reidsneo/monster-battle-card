@@ -15,6 +15,7 @@ import {
   unregisterDeck,
   validateDeck,
 } from './decks';
+import { repairGameState } from './engine';
 
 const DB_NAME = 'mrbc-local-v1';
 const DB_VERSION = 3;
@@ -70,7 +71,7 @@ export async function loadMatch(): Promise<{
     ) {
       const migrated = legacy.state as unknown as GameState;
       return {
-        state: {
+        state: repairGameState({
           ...migrated,
           contentVersion: CONTENT_VERSION,
           duelContext: migrated.duelContext ?? { mode: 'quick' },
@@ -97,7 +98,7 @@ export async function loadMatch(): Promise<{
                   migrated.pendingAttack.locksDamagedMonster ?? false,
               }
             : null,
-        },
+        }),
       };
     }
     return {
@@ -105,7 +106,7 @@ export async function loadMatch(): Promise<{
       error: 'This save was made with an incompatible content version.',
     };
   }
-  return { state: saved.state };
+  return { state: repairGameState(saved.state) };
 }
 
 export async function clearMatch() {

@@ -1,6 +1,6 @@
 'use client';
 
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Canvas } from '@react-three/fiber';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
@@ -13,8 +13,9 @@ import {
   Move,
   Trophy,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as THREE from 'three';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { PCFShadowMap } from 'three';
+import { ChibiPortrait, NPC_COLORS } from '@/components/world/chibi-portrait';
 import {
   dialogueFor,
   festivalUnlocked,
@@ -29,360 +30,13 @@ import type {
   NpcDefinition,
   WorldAreaId,
 } from '@/lib/game/types';
+import {
+  EMPTY_MOTION,
+  WorldScene,
+  type Motion,
+} from '@/components/world/world-scene';
 
-type Motion = {
-  forward: boolean;
-  back: boolean;
-  left: boolean;
-  right: boolean;
-};
-const EMPTY_MOTION: Motion = {
-  forward: false,
-  back: false,
-  left: false,
-  right: false,
-};
-
-function Tree({
-  position,
-  tone = '#4d9254',
-  scale = 1,
-}: {
-  position: [number, number, number];
-  tone?: string;
-  scale?: number;
-}) {
-  return (
-    <group position={position} scale={scale}>
-      <mesh castShadow position={[0, 0.75, 0]}>
-        <cylinderGeometry args={[0.14, 0.23, 1.5, 7]} />
-        <meshStandardMaterial color="#765237" roughness={1} />
-      </mesh>
-      <mesh castShadow position={[0, 1.75, 0]}>
-        <icosahedronGeometry args={[0.85, 1]} />
-        <meshStandardMaterial color={tone} roughness={1} flatShading />
-      </mesh>
-      <mesh castShadow position={[0.42, 1.9, -0.1]}>
-        <icosahedronGeometry args={[0.55, 1]} />
-        <meshStandardMaterial color={tone} roughness={1} flatShading />
-      </mesh>
-    </group>
-  );
-}
-
-function LowPolyPerson({
-  color,
-  active = false,
-}: {
-  color: string;
-  active?: boolean;
-}) {
-  return (
-    <group>
-      <mesh castShadow position={[0, 1.75, 0]}>
-        <sphereGeometry args={[0.24, 10, 8]} />
-        <meshStandardMaterial color="#d99b73" roughness={0.8} flatShading />
-      </mesh>
-      <mesh castShadow position={[0, 1.05, 0]}>
-        <coneGeometry args={[0.42, 1.18, 7]} />
-        <meshStandardMaterial color={color} roughness={0.8} flatShading />
-      </mesh>
-      <mesh castShadow position={[-0.21, 0.35, 0]}>
-        <cylinderGeometry args={[0.1, 0.12, 0.75, 6]} />
-        <meshStandardMaterial color="#28383c" />
-      </mesh>
-      <mesh castShadow position={[0.21, 0.35, 0]}>
-        <cylinderGeometry args={[0.1, 0.12, 0.75, 6]} />
-        <meshStandardMaterial color="#28383c" />
-      </mesh>
-      {active && (
-        <pointLight
-          position={[0, 1.2, 0]}
-          color="#ffd65a"
-          intensity={2.6}
-          distance={2.4}
-        />
-      )}
-    </group>
-  );
-}
-
-function Windmill() {
-  const blades = useRef<THREE.Group>(null);
-  useFrame((_, delta) => {
-    if (blades.current) blades.current.rotation.z -= delta * 0.35;
-  });
-  return (
-    <group position={[-7, 0, -6]}>
-      <mesh castShadow position={[0, 1.8, 0]}>
-        <cylinderGeometry args={[0.7, 1.05, 3.6, 7]} />
-        <meshStandardMaterial color="#dec78e" roughness={0.9} flatShading />
-      </mesh>
-      <mesh castShadow position={[0, 3.8, 0]}>
-        <coneGeometry args={[1.05, 1.1, 7]} />
-        <meshStandardMaterial color="#8a5240" roughness={0.9} />
-      </mesh>
-      <group ref={blades} position={[0, 3, 0.82]}>
-        {[0, 1, 2, 3].map((i) => (
-          <mesh
-            key={i}
-            position={[0, 1.08, 0]}
-            rotation={[0, 0, (i * Math.PI) / 2]}
-          >
-            <boxGeometry args={[0.18, 1.95, 0.08]} />
-            <meshStandardMaterial color="#f0dfb2" />
-          </mesh>
-        ))}
-      </group>
-    </group>
-  );
-}
-
-function RanchArea() {
-  return (
-    <>
-      <color attach="background" args={['#8ec8c0']} />
-      <fog attach="fog" args={['#a5d4c0', 14, 31]} />
-      <mesh receiveShadow position={[0, -0.25, 0]}>
-        <boxGeometry args={[22, 0.5, 20]} />
-        <meshStandardMaterial color="#648f50" roughness={1} />
-      </mesh>
-      <Windmill />
-      <Tree position={[-7, 0, 3]} scale={1.4} />
-      <Tree position={[7, 0, -1]} scale={1.25} />
-      <Tree position={[6, 0, 5]} />
-      <Tree position={[-4, 0, -7]} />
-      {[-8, -5.3, -2.6, 0, 2.6, 5.3, 8].map((x) => (
-        <group key={x} position={[x, 0.38, -8]}>
-          <mesh castShadow>
-            <boxGeometry args={[0.14, 0.9, 0.14]} />
-            <meshStandardMaterial color="#8b6942" />
-          </mesh>
-          <mesh castShadow position={[0, 0.2, 0]}>
-            <boxGeometry args={[2.7, 0.12, 0.1]} />
-            <meshStandardMaterial color="#8b6942" />
-          </mesh>
-        </group>
-      ))}
-      <mesh castShadow position={[0, 0.08, 7.8]}>
-        <boxGeometry args={[3.4, 0.18, 1.2]} />
-        <meshStandardMaterial color="#d5c176" roughness={0.9} />
-      </mesh>
-    </>
-  );
-}
-
-function FestivalArea() {
-  return (
-    <>
-      <color attach="background" args={['#d29a68']} />
-      <fog attach="fog" args={['#e0bd85', 15, 31]} />
-      <mesh receiveShadow position={[0, -0.24, 0]}>
-        <boxGeometry args={[22, 0.48, 20]} />
-        <meshStandardMaterial color="#b69b70" roughness={1} />
-      </mesh>
-      <mesh
-        receiveShadow
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, 0.01, 0]}
-      >
-        <circleGeometry args={[6.3, 12]} />
-        <meshStandardMaterial color="#c9b68e" roughness={0.95} flatShading />
-      </mesh>
-      {[-7, 7].map((x) =>
-        [-6, -2, 2, 6].map((z) => (
-          <group key={`${x}-${z}`} position={[x, 0, z]}>
-            <mesh castShadow position={[0, 1.2, 0]}>
-              <cylinderGeometry args={[0.38, 0.48, 2.4, 8]} />
-              <meshStandardMaterial color="#d6c394" roughness={1} />
-            </mesh>
-            <mesh castShadow position={[0, 2.55, 0]}>
-              <boxGeometry args={[0.95, 0.24, 0.95]} />
-              <meshStandardMaterial color="#8b4250" />
-            </mesh>
-          </group>
-        )),
-      )}
-      {[-5, -3, -1, 1, 3, 5].map((x) => (
-        <group key={x} position={[x, 0, 5.8]}>
-          <LowPolyPerson color={x % 2 ? '#6e4e8a' : '#47788d'} />
-        </group>
-      ))}
-      <Tree position={[-7.5, 0, 6]} tone="#8b7044" />
-      <Tree position={[7.5, 0, 6]} tone="#8b7044" />
-    </>
-  );
-}
-
-function PlayerController({
-  save,
-  motion,
-  cameraYaw,
-  onPosition,
-  onNear,
-}: {
-  save: CampaignSaveV1;
-  motion: Motion;
-  cameraYaw: number;
-  onPosition: (position: [number, number, number], yaw: number) => void;
-  onNear: (npc: NpcDefinition | null) => void;
-}) {
-  const group = useRef<THREE.Group>(null);
-  const { camera } = useThree();
-  const keys = useRef(new Set<string>());
-  const lastReport = useRef(0);
-  const velocity = useMemo(() => new THREE.Vector3(), []);
-  useEffect(() => {
-    const down = (event: KeyboardEvent) =>
-      keys.current.add(event.key.toLowerCase());
-    const up = (event: KeyboardEvent) =>
-      keys.current.delete(event.key.toLowerCase());
-    window.addEventListener('keydown', down);
-    window.addEventListener('keyup', up);
-    return () => {
-      window.removeEventListener('keydown', down);
-      window.removeEventListener('keyup', up);
-    };
-  }, []);
-  useFrame(({ clock }, delta) => {
-    const player = group.current;
-    if (!player) return;
-    const forward =
-      keys.current.has('w') || keys.current.has('arrowup') || motion.forward;
-    const back =
-      keys.current.has('s') || keys.current.has('arrowdown') || motion.back;
-    const left =
-      keys.current.has('a') || keys.current.has('arrowleft') || motion.left;
-    const right =
-      keys.current.has('d') || keys.current.has('arrowright') || motion.right;
-    velocity.set(
-      (right ? 1 : 0) - (left ? 1 : 0),
-      0,
-      (back ? 1 : 0) - (forward ? 1 : 0),
-    );
-    if (velocity.lengthSq() > 0) {
-      velocity
-        .normalize()
-        .applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraYaw);
-      const speed = Math.min(delta, 0.05) * 4.1;
-      player.position.addScaledVector(velocity, speed);
-      player.position.x = THREE.MathUtils.clamp(player.position.x, -8.2, 8.2);
-      player.position.z = THREE.MathUtils.clamp(player.position.z, -7.2, 7.2);
-      player.rotation.y = Math.atan2(velocity.x, velocity.z);
-      player.position.y = Math.abs(Math.sin(clock.elapsedTime * 9)) * 0.045;
-    }
-    const cameraTarget = new THREE.Vector3(
-      player.position.x + Math.sin(cameraYaw) * 7.4,
-      5.8,
-      player.position.z + Math.cos(cameraYaw) * 7.4,
-    );
-    camera.position.lerp(cameraTarget, 0.06);
-    camera.lookAt(
-      player.position.x - Math.sin(cameraYaw) * 1.2,
-      0.8,
-      player.position.z - Math.cos(cameraYaw) * 1.2,
-    );
-    if (clock.elapsedTime - lastReport.current > 0.15) {
-      lastReport.current = clock.elapsedTime;
-      const position: [number, number, number] = [
-        player.position.x,
-        0,
-        player.position.z,
-      ];
-      onPosition(position, player.rotation.y);
-      const nearby = WORLDS[save.areaId].npcIds
-        .map((id) => NPCS[id])
-        .filter((npc) => npcUnlocked(save, npc))
-        .sort(
-          (a, b) =>
-            new THREE.Vector3(...a.position).distanceTo(player.position) -
-            new THREE.Vector3(...b.position).distanceTo(player.position),
-        )[0];
-      onNear(
-        nearby &&
-          new THREE.Vector3(...nearby.position).distanceTo(player.position) <
-            1.75
-          ? nearby
-          : null,
-      );
-    }
-  });
-  return (
-    <group ref={group} position={save.position}>
-      <LowPolyPerson color={OUTFIT_PALETTES[save.outfit].color} active />
-    </group>
-  );
-}
-
-function WorldScene({
-  save,
-  motion,
-  cameraYaw,
-  onPosition,
-  onNear,
-  onNpc,
-}: {
-  save: CampaignSaveV1;
-  motion: Motion;
-  cameraYaw: number;
-  onPosition: (position: [number, number, number], yaw: number) => void;
-  onNear: (npc: NpcDefinition | null) => void;
-  onNpc: (npc: NpcDefinition) => void;
-}) {
-  return (
-    <>
-      <ambientLight intensity={1.55} />
-      <hemisphereLight args={['#fff1c6', '#405b42', 1.35]} />
-      <directionalLight
-        castShadow
-        position={[-6, 10, 5]}
-        intensity={2.4}
-        color="#ffe4ad"
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
-      />
-      {save.areaId === 'ranch' ? <RanchArea /> : <FestivalArea />}
-      {WORLDS[save.areaId].npcIds.map((id) => {
-        const npc = NPCS[id];
-        const locked = !npcUnlocked(save, npc);
-        return (
-          <group
-            key={id}
-            position={npc.position}
-            onClick={(event) => {
-              event.stopPropagation();
-              if (!locked) onNpc(npc);
-            }}
-          >
-            <LowPolyPerson
-              color={
-                locked
-                  ? '#666a68'
-                  : npc.difficulty === 'hard'
-                    ? '#243a75'
-                    : npc.difficulty === 'normal'
-                      ? '#9e4953'
-                      : '#3f8d76'
-              }
-              active={!locked}
-            />
-            <mesh position={[0, 2.35, 0]}>
-              <octahedronGeometry args={[0.16, 0]} />
-              <meshBasicMaterial color={locked ? '#777' : '#ffd75b'} />
-            </mesh>
-          </group>
-        );
-      })}
-      <PlayerController
-        save={save}
-        motion={motion}
-        cameraYaw={cameraYaw}
-        onPosition={onPosition}
-        onNear={onNear}
-      />
-    </>
-  );
-}
+const WORLD_SHADOWS = { type: PCFShadowMap };
 
 export function WorldClient() {
   const params = useSearchParams();
@@ -392,10 +46,32 @@ export function WorldClient() {
   const [nearby, setNearby] = useState<NpcDefinition | null>(null);
   const [dialogueNpc, setDialogueNpc] = useState<NpcDefinition | null>(null);
   const [webgl, setWebgl] = useState<boolean | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
   const saveTimer = useRef<number | null>(null);
+  const latestSave = useRef<CampaignSaveV1 | null>(null);
   const cameraDrag = useRef<{ pointerId: number; x: number } | null>(null);
+  const dragDistance = useRef(0);
   useEffect(() => {
-    void loadCampaign().then(setSave);
+    void loadCampaign().then((campaign) => {
+      setSave(campaign);
+      setLoaded(true);
+    });
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const updateMotionPreference = () => {
+      let savedPreference = false;
+      try {
+        savedPreference = Boolean(
+          JSON.parse(window.localStorage.getItem('mrbc-presentation') ?? '{}')
+            .reducedMotion,
+        );
+      } catch {
+        /* use system preference */
+      }
+      setReducedMotion(media.matches || savedPreference);
+    };
+    updateMotionPreference();
+    media.addEventListener('change', updateMotionPreference);
     try {
       const canvas = document.createElement('canvas');
       setWebgl(
@@ -404,41 +80,58 @@ export function WorldClient() {
     } catch {
       setWebgl(false);
     }
+    return () => media.removeEventListener('change', updateMotionPreference);
   }, []);
+  useEffect(() => {
+    latestSave.current = save;
+  }, [save]);
   const updatePosition = useCallback(
     (position: [number, number, number], yaw: number) => {
       setSave((current) => (current ? { ...current, position, yaw } : current));
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
-      saveTimer.current = window.setTimeout(
-        () =>
-          setSave((current) => {
-            if (current) void saveCampaign(current);
-            return current;
-          }),
-        450,
-      );
+      saveTimer.current = window.setTimeout(() => {
+        if (latestSave.current) void saveCampaign(latestSave.current);
+      }, 450);
     },
     [],
   );
   useEffect(
     () => () => {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      if (latestSave.current) void saveCampaign(latestSave.current);
     },
     [],
   );
+  const openDialogue = useCallback((npc: NpcDefinition) => {
+    if (dragDistance.current > 5) return;
+    setMotion(EMPTY_MOTION);
+    setDialogueNpc(npc);
+  }, []);
   useEffect(() => {
     const interact = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() === 'e' && nearby) setDialogueNpc(nearby);
+      if (event.repeat) return;
+      if (event.key === 'Escape') setDialogueNpc(null);
+      if (event.key.toLowerCase() === 'e' && nearby && !dialogueNpc) {
+        setMotion(EMPTY_MOTION);
+        setDialogueNpc(nearby);
+      }
     };
     window.addEventListener('keydown', interact);
     return () => window.removeEventListener('keydown', interact);
-  }, [nearby]);
+  }, [nearby, dialogueNpc]);
+  if (!loaded)
+    return (
+      <main className="loading-screen">
+        <span className="brand-mark">MR</span>
+        <p>Opening the town gates…</p>
+      </main>
+    );
   if (!save)
     return (
       <main className="world-missing">
         <div className="brand-mark">MR</div>
         <h1>No journey found</h1>
-        <p>Begin a journey at the title screen before entering the ranch.</p>
+        <p>Begin a journey at the title screen before entering the town.</p>
         <Link href="/">Return to title</Link>
       </main>
     );
@@ -453,7 +146,12 @@ export function WorldClient() {
       position: [0, 0, 5.8] as [number, number, number],
       yaw: Math.PI,
     };
+    setDialogueNpc(null);
+    setNearby(null);
+    setMotion(EMPTY_MOTION);
+    cameraDrag.current = null;
     setSave(next);
+    latestSave.current = next;
     void saveCampaign(next);
   };
   return (
@@ -461,12 +159,14 @@ export function WorldClient() {
       className="world-shell"
       onPointerDown={(event) => {
         if (!(event.target instanceof HTMLCanvasElement)) return;
+        dragDistance.current = 0;
         cameraDrag.current = { pointerId: event.pointerId, x: event.clientX };
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
       onPointerMove={(event) => {
         if (cameraDrag.current?.pointerId !== event.pointerId) return;
         const delta = event.clientX - cameraDrag.current.x;
+        dragDistance.current += Math.abs(delta);
         cameraDrag.current.x = event.clientX;
         setCameraYaw((yaw) => yaw - delta * 0.008);
       }}
@@ -483,22 +183,25 @@ export function WorldClient() {
       {webgl === null ? (
         <section className="world-fallback world-fallback-loading">
           <small>PREPARING JOURNEY</small>
-          <h2>Opening the ranch…</h2>
+          <h2>Opening the town…</h2>
         </section>
       ) : webgl ? (
         <Canvas
-          shadows
-          camera={{ position: [0, 5.8, 12], fov: 49, near: 0.1, far: 60 }}
+          shadows={WORLD_SHADOWS}
+          camera={{ position: [0, 4.8, 13.5], fov: 55, near: 0.1, far: 85 }}
           dpr={[1, 1.5]}
           gl={{ antialias: true, powerPreference: 'high-performance' }}
         >
           <WorldScene
+            key={save.areaId}
             save={save}
             motion={motion}
             cameraYaw={cameraYaw}
+            dialogueNpc={dialogueNpc}
+            reducedMotion={reducedMotion}
             onPosition={updatePosition}
             onNear={setNearby}
-            onNpc={setDialogueNpc}
+            onNpc={openDialogue}
           />
         </Canvas>
       ) : (
@@ -555,7 +258,12 @@ export function WorldClient() {
           } as React.CSSProperties
         }
       >
-        <img src={OUTFIT_PALETTES[save.outfit].portrait} alt="Player breeder" />
+        <ChibiPortrait
+          key={save.outfit}
+          color={OUTFIT_PALETTES[save.outfit].color}
+          fallback={OUTFIT_PALETTES[save.outfit].portrait}
+          name="Breeder"
+        />
         <div>
           <small>
             {save.campaignComplete ? 'CHAMPION BREEDER' : 'ROOKIE BREEDER'}
@@ -571,7 +279,10 @@ export function WorldClient() {
       {nearby && !dialogueNpc && (
         <button
           className="interact-prompt"
-          onClick={() => setDialogueNpc(nearby)}
+          onClick={() => {
+            dragDistance.current = 0;
+            openDialogue(nearby);
+          }}
         >
           <MessageCircle />
           <span>
@@ -582,12 +293,15 @@ export function WorldClient() {
       )}
       <button
         className="travel-button"
-        disabled={save.areaId === 'ranch' && !festivalUnlocked(save)}
+        disabled={
+          Boolean(dialogueNpc) ||
+          (save.areaId === 'ranch' && !festivalUnlocked(save))
+        }
         onClick={travel}
       >
         <Map />
         <span>
-          {save.areaId === 'ranch' ? 'Festival Courtyard' : 'Ranch Grounds'}
+          {WORLDS[save.areaId === 'ranch' ? 'festival' : 'ranch'].name}
           <small>
             {save.areaId === 'ranch' && !festivalUnlocked(save)
               ? 'Win two ranch duels'
@@ -603,30 +317,30 @@ export function WorldClient() {
       )}
       {webgl && (
         <div className="touch-dpad" aria-label="Movement controls">
-          <button
-            onPointerDown={() => setMotion((v) => ({ ...v, forward: true }))}
-            onPointerUp={() => setMotion((v) => ({ ...v, forward: false }))}
-          >
-            ▲
-          </button>
-          <button
-            onPointerDown={() => setMotion((v) => ({ ...v, left: true }))}
-            onPointerUp={() => setMotion((v) => ({ ...v, left: false }))}
-          >
-            ◀
-          </button>
-          <button
-            onPointerDown={() => setMotion((v) => ({ ...v, back: true }))}
-            onPointerUp={() => setMotion((v) => ({ ...v, back: false }))}
-          >
-            ▼
-          </button>
-          <button
-            onPointerDown={() => setMotion((v) => ({ ...v, right: true }))}
-            onPointerUp={() => setMotion((v) => ({ ...v, right: false }))}
-          >
-            ▶
-          </button>
+          {(['forward', 'left', 'back', 'right'] as const).map(
+            (direction, index) => (
+              <button
+                key={direction}
+                aria-label={`Move ${direction}`}
+                disabled={Boolean(dialogueNpc)}
+                onPointerDown={(event) => {
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  setMotion((value) => ({ ...value, [direction]: true }));
+                }}
+                onPointerUp={(event) => {
+                  setMotion((value) => ({ ...value, [direction]: false }));
+                  if (event.currentTarget.hasPointerCapture(event.pointerId))
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                }}
+                onPointerCancel={() => setMotion(EMPTY_MOTION)}
+                onLostPointerCapture={() =>
+                  setMotion((value) => ({ ...value, [direction]: false }))
+                }
+              >
+                {['▲', '◀', '▼', '▶'][index]}
+              </button>
+            ),
+          )}
         </div>
       )}
       {resultNpc && (
@@ -640,16 +354,24 @@ export function WorldClient() {
         </div>
       )}
       {dialogueNpc && dialogue && (
-        <section className="npc-dialogue">
-          <img
-            src={dialogueNpc.portrait}
-            alt={`${dialogueNpc.name} portrait`}
+        <dialog
+          open
+          className="npc-dialogue"
+          aria-modal="true"
+          aria-labelledby="journey-dialogue-name"
+        >
+          <ChibiPortrait
+            key={dialogueNpc.id}
+            variant={dialogueNpc.id}
+            color={NPC_COLORS[dialogueNpc.id]}
+            fallback={dialogueNpc.portrait}
+            name={dialogueNpc.name}
           />
           <div>
             <small>
               {dialogueNpc.title} · {dialogueNpc.difficulty.toUpperCase()}
             </small>
-            <h2>{dialogueNpc.name}</h2>
+            <h2 id="journey-dialogue-name">{dialogueNpc.name}</h2>
             <p>{dialogue.line}</p>
             <nav>
               {dialogue.choices.map((choice) =>
@@ -657,6 +379,9 @@ export function WorldClient() {
                   <Link
                     key={choice.id}
                     href={`/play?mode=campaign&npc=${dialogueNpc.id}`}
+                    onClick={() => {
+                      void saveCampaign(save);
+                    }}
                   >
                     <Gamepad2 /> {choice.label}
                   </Link>
@@ -671,7 +396,7 @@ export function WorldClient() {
               </Link>
             </nav>
           </div>
-        </section>
+        </dialog>
       )}
     </main>
   );
